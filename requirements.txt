@@ -1,3 +1,4 @@
 zhipuai
 streamlit
 pydantic
+openai
