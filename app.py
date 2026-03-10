@@ -13,6 +13,11 @@ from src.llm_client import LLMClient
 from src.prompt_builder import PromptBuilder
 from src.rule_validator import RuleValidator
 
+import os
+
+# 在这里直接写入您的智谱 API Key
+os.environ["ZHIPUAI_API_KEY"] = "4ec5f1fcab3d44ecaa75b6f0f16f1924.dU68s62CR7kfuBMH"
+
 # 页面配置
 st.set_page_config(
     page_title="Alice - ADHD智能陪伴机器人",
