@@ -3,3 +3,4 @@ streamlit
 pydantic
 openai
 python-dotenv
+plotly
