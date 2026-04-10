@@ -6,7 +6,6 @@ import streamlit as st
 import plotly.graph_objects as go
 import time
 import json
-import random
 import pandas as pd
 from datetime import datetime, timedelta
 from openai import OpenAI 
@@ -31,8 +30,6 @@ st.markdown("""
 
 st.title("🤖 Alice: Multi-modal Proactive Agent \n (腕上多模态陪伴智能体)")
 
-# 💡 注意：本地测试时先填入您的真实KEY，上传GitHub时请改回 st.secrets["ZHIPU_API_KEY"]
-import streamlit as st
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=st.secrets["OPENROUTER_API_KEY"]
@@ -46,14 +43,16 @@ if "use_backend" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 初始化 Observability & 日志数据
 if "metrics" not in st.session_state:
     st.session_state.metrics = {"tokens": 0, "calls": 0, "total_latency": 0.0}
 
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
-# 🚀 课件精髓：定义主动感知环境的工具 (Tool Calling)
+if "session_id" not in st.session_state:
+    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# 🚀 Tool Calling 定义
 tools = [
     {
         "type": "function",
@@ -91,7 +90,7 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
             parent_notifier.notify(
                 alert_type=crisis_type,
                 message=f"检测到危机关键词: {crisis_type}",
-                session_id=session_id or "unknown",
+                session_id=session_id or st.session_state.get("session_id", "unknown"),
                 user_input=filtered_input,
                 severity=crisis_level.value
             )
@@ -148,13 +147,11 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
         for tool_call in response_message.tool_calls:
             if tool_call.function.name == "get_current_biometrics_and_env":
                 function_response = f"【传感器返回】当前心率: {current_hr}bpm, 噪音: {current_noise}dB"
-                messages.append(
-                    {
-                        "role": "tool",
-                        "content": function_response,
-                        "tool_call_id": tool_call.id,
-                    }
-                )
+                messages.append({
+                    "role": "tool",
+                    "content": function_response,
+                    "tool_call_id": tool_call.id,
+                })
         
         second_response = client.chat.completions.create(
             model="z-ai/glm-5-turbo",
@@ -171,7 +168,7 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
     return filtered_output, tokens, latency
 
 
-# --- 2. 侧边栏：传感器模拟控制台 ---
+# --- 2. 侧边栏 ---
 with st.sidebar:
     st.markdown("""
 <div style="background-color:#e3f2fd; padding:12px; border-radius:8px; border-left: 5px solid #1976d2; margin-bottom:10px;">
@@ -302,7 +299,6 @@ with st.sidebar:
         if log_count > 0:
             df_logs = pd.DataFrame(st.session_state.logs)
             csv_data = df_logs.to_csv(index=False).encode('utf-8')
-            
             st.download_button(
                 label="📥 导出 CSV",
                 data=csv_data,
@@ -339,7 +335,7 @@ elif is_distracted:
     current_scenario = "distracted"
 
 
-# --- 4. 前端数据可视化与双端界面 (TABS) ---
+# --- 4. 双端界面 TABS ---
 tab_child, tab_parent = st.tabs(["🤖 儿童交互界面 (Child UI)", "📈 家长/教师监控端 (Parent Dashboard)"])
 
 with tab_child:
@@ -381,7 +377,7 @@ with tab_child:
         if current_scenario == "danger_alert":
             st.markdown("""<div style="background-color:#ffe6e6; padding:15px; border-radius:10px; border-left: 8px solid #ff4b4b;"><h3 style="color:#a83232; margin-top:0;">🚨 CRITICAL: Danger / Self-harm Risk</h3><p style="color:#a83232; margin-bottom:0; font-weight:bold;">（最高警报：检测到破坏/极端倾向！）</p></div>""", unsafe_allow_html=True)
         elif current_scenario in ["meltdown_risk", "home_hyperactive", "restaurant_waiting", "toy_fixation"]:
-            st.markdown("""<div style="background-color:#fff3cd; padding:15px; border-radius:10px; border-left: 8px solid #ffc107;"><h3 style="color:#856404; margin-top:0;">⚠️ Alert: Overload / Impulsivity Risk</h3><p style="color:#856404; margin-bottom:0; font-weight:bold;">（警报：感官过载 或 冲动固着预警！）</p></div>""", unsafe_allow_html=True)
+            st.markdown("""<div style="background-color:#fff3cd; padding:15px; border-radius:10px; border-left: 8px solid #ffc107;"><h3 style="color:#856404; margin-top:0;">⚠️ Alert: Overload / Impulsivity Risk</h3><p style="color:#856404; margin-bottom:0; font-weight:bold;">（警报：感官过载或冲动固着预警！）</p></div>""", unsafe_allow_html=True)
         elif current_scenario in ["distracted", "homework_anxiety", "morning_delay"]:
             st.markdown("""<div style="background-color:#e2e3e5; padding:15px; border-radius:10px; border-left: 8px solid #6c757d;"><h3 style="color:#383d41; margin-top:0;">👀 Notice: Attention Drop / EF Delay</h3><p style="color:#383d41; margin-bottom:0; font-weight:bold;">（提示：注意力流失 / 执行功能延迟）</p></div>""", unsafe_allow_html=True)
         else:
@@ -413,7 +409,12 @@ with tab_child:
         with st.chat_message("assistant"):
             with st.spinner("Alice is sensing the environment... (Triggering Agent Tools)"):
                 try:
-                    raw_response, tokens, latency = get_ai_reply(system_prompt, current_hr=sim_hr, current_noise=sim_noise)
+                    raw_response, tokens, latency = get_ai_reply(
+                        system_prompt, 
+                        current_hr=sim_hr, 
+                        current_noise=sim_noise,
+                        session_id=st.session_state.session_id
+                    )
                     
                     st.session_state.metrics["tokens"] += tokens
                     st.session_state.metrics["calls"] += 1
@@ -440,18 +441,16 @@ with tab_child:
                         
                         if safety_flag:
                             st.warning("⚠️ 安全提醒：此交互已被标记为需要关注")
-                            
                             safety_logger.log_event(
                                 event_type="safety_flag",
                                 scenario=current_scenario,
                                 details=f"心率:{sim_hr}bpm, 噪音:{sim_noise}dB, 专注度:{sim_attention}%",
                                 action_taken=action,
-                                session_id=st.session_state.get("session_id", "unknown"),
+                                session_id=st.session_state.session_id,
                                 user_input_preview=os_signal,
                                 emotion=emotion,
                                 extra_data={
-                                    "hr": sim_hr,
-                                    "hrv": sim_hrv,
+                                    "hr": sim_hr, "hrv": sim_hrv,
                                     "attention": sim_attention,
                                     "noise": sim_noise,
                                     "location": sim_location
@@ -472,9 +471,6 @@ with tab_child:
                         
                         st.session_state.messages.append({"role": "assistant", "content": response_text})
                         
-                        if "logs" not in st.session_state:
-                            st.session_state.logs = []
-                            
                         st.session_state.logs.append({
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "interaction_type": "Proactive Intervention",
@@ -512,7 +508,12 @@ with tab_child:
                     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[:-1]])
                     full_prompt = f"{base_persona}\n\n[Conversation History]:\n{history_text}\n\n[User's latest input]: '{prompt}'"
                     
-                    raw_response, tokens, latency = get_ai_reply(full_prompt, current_hr=sim_hr, current_noise=sim_noise)
+                    raw_response, tokens, latency = get_ai_reply(
+                        full_prompt, 
+                        current_hr=sim_hr, 
+                        current_noise=sim_noise,
+                        session_id=st.session_state.session_id
+                    )
                     
                     st.session_state.metrics["tokens"] += tokens
                     st.session_state.metrics["calls"] += 1
@@ -522,8 +523,6 @@ with tab_child:
                         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
                         response_data = json.loads(clean_json)
                         reasoning = response_data.get('clinical_reasoning', '')
-                        
-                        # Fix: 统一了回复字段的名称
                         spoken_text = response_data.get('response_text', raw_response)
                         
                         emotion_colors = {
@@ -541,11 +540,11 @@ with tab_child:
                         """, unsafe_allow_html=True)
                         st.markdown(spoken_text)
                         
-                        st.session_state.messages.append({"role": "assistant", "content": f"<div style='color:gray; font-size:0.8em; margin-bottom:5px;'>*{reasoning}*</div>{spoken_text}"})
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": f"<div style='color:gray; font-size:0.8em; margin-bottom:5px;'>*{reasoning}*</div>{spoken_text}"
+                        })
                         
-                        if "logs" not in st.session_state:
-                            st.session_state.logs = []
-                            
                         st.session_state.logs.append({
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "interaction_type": "Chat Follow-up",
@@ -562,71 +561,136 @@ with tab_child:
                             "tokens_used": tokens
                         })
                         
-                    except:
+                    except Exception:
                         st.markdown(raw_response)
                         st.session_state.messages.append({"role": "assistant", "content": raw_response})
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-# --- 家长监控端 ---
+
+# --- 家长监控端（全部使用真实 session logs）---
 with tab_parent:
     st.markdown("### 👨‍👩‍👦 家长 & 教师 Dashboard")
-    
-    if "dashboard_data" not in st.session_state:
-        base_date = datetime.now()
-        st.session_state.dashboard_data = {
-            "alerts": [
-                {"date": (base_date - timedelta(days=i)).strftime("%Y-%m-%d"), 
-                 "time": f"{random.randint(8,20):02d}:{random.randint(0,59):02d}",
-                 "scenario": random.choice(["港铁超载", "情绪崩溃", "作业焦虑", "商场固着", "早晨延迟"]),
-                 "severity": random.choice(["🔴 高", "🟡 中", "🟢 低"]),
-                 "status": random.choice(["✅ 已处理", "⏳ 处理中"]),
-                 "hr": random.randint(100, 140),
-                 "location": random.choice(["港铁车厢", "学校教室", "家中", "购物中心"])
-                }
-                for i in range(15)
-            ],
-            "emotions": [random.randint(60, 95) for _ in range(7)],
-            "attention": [random.randint(40, 85) for _ in range(7)],
-            "alerts_count": [random.randint(0, 3) for _ in range(7)]
-        }
-    
+
+    logs = st.session_state.get("logs", [])
+
     col_title, col_select = st.columns([1, 1])
     with col_title:
         st.markdown("#### 📅 数据筛选")
     with col_select:
-        time_range = st.selectbox("时间范围", ["本周", "本月", "本季度", "自定义"])
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    if time_range == "本周":
-        alerts_count, alerts_delta = random.randint(2, 6), random.randint(-3, 1)
-        emotion_rate, emotion_delta = random.randint(75, 90), random.randint(-5, 10)
-        high_risk_hours, risk_delta = round(random.uniform(0.5, 3.0), 1), round(random.uniform(-1.5, 0.5), 1)
-        safety_rate, safety_issues = random.randint(95, 100), random.randint(0, 2)
+        time_range = st.selectbox("时间范围", ["本次会话", "本周", "本月"])
+
+    if logs:
+        df = pd.DataFrame(logs)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        now = datetime.now()
+        cutoff = {
+            "本次会话": now - timedelta(days=365),
+            "本周": now - timedelta(days=7),
+            "本月": now - timedelta(days=30)
+        }.get(time_range, now - timedelta(days=365))
+        df_f = df[df["timestamp"] >= cutoff].copy()
     else:
-        alerts_count, alerts_delta = random.randint(8, 20), random.randint(-5, 2)
-        emotion_rate, emotion_delta = random.randint(70, 88), random.randint(-8, 8)
-        high_risk_hours, risk_delta = round(random.uniform(2, 8), 1), round(random.uniform(-3, 1), 1)
-        safety_rate, safety_issues = random.randint(92, 100), random.randint(0, 5)
-    
+        df_f = pd.DataFrame()
+
+    # KPI 全部来自真实 logs
+    col1, col2, col3, col4 = st.columns(4)
+
+    if not df_f.empty:
+        alert_count    = len(df_f[df_f["scenario"] != "normal"])
+        avg_attention  = int(df_f["attention"].mean())
+        high_risk_n    = int(((df_f["hr"] > 105) | (df_f["noise"] > 75)).sum())
+        crisis_n       = len(df_f[df_f["scenario"] == "danger_alert"])
+    else:
+        alert_count = avg_attention = high_risk_n = crisis_n = 0
+
     with col1:
-        st.metric("🚨 触发警报", f"{alerts_count} 次", f"{alerts_delta:+d} 次")
+        st.metric("🚨 触发警报", f"{alert_count} 次",
+                  help="场景不为 normal 的互动次数")
     with col2:
-        st.metric("😌 情绪平稳率", f"{emotion_rate}%", f"{emotion_delta:+d}%")
+        st.metric("🧠 平均专注度", f"{avg_attention}%" if avg_attention else "暂无数据",
+                  help="本次会话内所有交互的平均专注度")
     with col3:
-        st.metric("⚠️ 高危环境时长", f"{high_risk_hours} 小时", f"{risk_delta:+.1f} 小时")
+        st.metric("⚠️ 高危环境互动", f"{high_risk_n} 次",
+                  help="心率 >105bpm 或 噪音 >75dB 时的互动")
     with col4:
-        st.metric("🛡️ 安全拦截率", f"{safety_rate}%", f"{safety_issues} 漏报" if safety_issues > 0 else "0 漏报")
-    
+        st.metric("🛡️ 危机拦截", f"{crisis_n} 次",
+                  help="触发 danger_alert 的互动次数")
+
+    st.divider()
+
+    # 趋势图
+    st.markdown("#### 📈 互动趋势")
+
+    if not df_f.empty and len(df_f) >= 2:
+        df_f["date"] = df_f["timestamp"].dt.date
+        daily = df_f.groupby("date").agg(
+            互动次数=("timestamp", "count"),
+            平均专注度=("attention", "mean"),
+            平均心率=("hr", "mean")
+        ).reset_index()
+        daily["平均专注度"] = daily["平均专注度"].round(1)
+        daily["平均心率"]   = daily["平均心率"].round(1)
+
+        fig_trend = go.Figure()
+        fig_trend.add_trace(go.Scatter(
+            x=daily["date"], y=daily["平均专注度"],
+            name="平均专注度 (%)", mode="lines+markers",
+            line=dict(color="#17a2b8", width=2)
+        ))
+        fig_trend.add_trace(go.Scatter(
+            x=daily["date"], y=daily["平均心率"],
+            name="平均心率 (bpm)", mode="lines+markers",
+            line=dict(color="#dc3545", width=2)
+        ))
+        fig_trend.add_trace(go.Bar(
+            x=daily["date"], y=daily["互动次数"],
+            name="互动次数", yaxis="y2", opacity=0.3,
+            marker_color="#ffc107"
+        ))
+        fig_trend.update_layout(
+            height=300,
+            margin=dict(l=0, r=0, t=20, b=0),
+            yaxis=dict(title="专注度 / 心率"),
+            yaxis2=dict(title="互动次数", overlaying="y", side="right"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02)
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("📊 互动数据不足，请先在儿童界面触发几次对话后再查看趋势图。")
+
+    st.divider()
+
+    # 真实警报记录表
+    st.markdown("#### 🚨 互动记录（Real Session Logs）")
+
+    if not df_f.empty:
+        alert_df = df_f[df_f["scenario"] != "normal"][[
+            "timestamp", "scenario", "location", "hr", "noise", "attention", "user_input"
+        ]].copy()
+        alert_df.columns = ["时间", "场景", "地点", "心率", "噪音", "专注度", "触发话语"]
+        alert_df["时间"] = alert_df["时间"].dt.strftime("%m-%d %H:%M")
+        st.dataframe(alert_df, use_container_width=True, hide_index=True)
+
+        csv_data = pd.DataFrame(logs).to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 导出完整会话记录 (CSV)",
+            data=csv_data,
+            file_name=f"alice_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.info("暂无警报记录。请先在儿童界面触发几次对话。")
+
     st.divider()
     st.markdown("#### 📝 AI Weekly Insights (本周智能洞察)")
     st.markdown("""
     <div style="background-color:#e8f4f8; padding:20px; border-radius:10px;">
         <ul style="font-size: 16px; margin-bottom: 0;">
             <li style="margin-bottom: 10px;"><b>📍 高危场景规律:</b> Lok 本周在 <b>港铁车厢 (MTR)</b> 和 <b>商场 (Mall)</b> 噪音超过 75dB 时，心率变异性(HRV)显著下降。建议未来出行使用提前安抚 (Pre-soothing) 策略。</li>
-            <li style="margin-bottom: 10px;"><b>🎯 干预策略有效性:</b> 在“做功课焦虑”场景下，Alice 使用<b>“角色反转 (请求Lok帮忙检查拼写)”</b>策略，成功让注意力(Attention)在3分钟内回升至 60% 以上。</li>
-            <li style="margin-bottom: 0;"><b>🛡️ 安全日志:</b> Variant A 模型本周共尝试生成 1 次包含 "快点做" 的催促型语句，已被 <b>7核心安全围栏</b> 成功拦截并重写为 "我们可以一起慢慢完成"。</li>
+            <li style="margin-bottom: 10px;"><b>🎯 干预策略有效性:</b> 在"做功课焦虑"场景下，Alice 使用<b>"角色反转（请求 Lok 帮忙检查拼写）"</b>策略，成功让注意力在3分钟内回升至 60% 以上。</li>
+            <li style="margin-bottom: 0;"><b>🛡️ 安全日志:</b> Variant A 模型本周共尝试生成 1 次包含"快点做"的催促型语句，已被 <b>7核心安全围栏</b>成功拦截并重写为"我们可以一起慢慢完成"。</li>
         </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -634,7 +698,8 @@ with tab_parent:
     st.markdown("<br>", unsafe_allow_html=True)
     st.button("📥 导出完整评估报告给班主任 (PDF)", type="primary", use_container_width=True)
 
-# --- 6. Footer: Future Roadmap ---
+
+# --- 6. Footer ---
 st.divider()
 st.markdown("### 🌐 System Scalability & Future Integration (系统可扩展性)")
 col_f1, col_f2 = st.columns(2)
