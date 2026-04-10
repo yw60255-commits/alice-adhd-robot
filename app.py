@@ -2,13 +2,16 @@ import sys
 import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
+# ── 必须先 import，再用 ──────────────────────────────────────
 import streamlit as st
 import plotly.graph_objects as go
 import time
 import json
 import pandas as pd
 from datetime import datetime, timedelta
-from openai import OpenAI 
+from openai import OpenAI
+from dotenv import load_dotenv
+
 from src.prompt_builder import PromptBuilder
 from src.api_client import APIClient
 from src.config import API_BASE_URL, USE_BACKEND_API
@@ -16,6 +19,27 @@ from src.safety_filter import input_filter, output_filter
 from src.crisis_handler import crisis_handler, CrisisLevel
 from src.parent_notifier import parent_notifier, session_logger
 from src.safety_logger import safety_logger
+
+# ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
+load_dotenv()
+
+def get_api_key():
+    try:
+        return st.secrets["OPENROUTER_API_KEY"]
+    except:
+        return os.getenv("OPENROUTER_API_KEY")
+
+# ── 唯一的 client 定义 ────────────────────────────────────────
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=get_api_key()
+)
+
+# ── 模型配置（从环境变量读取，不再硬编码）────────────────────
+VARIANT_A = os.getenv("VARIANT_A_MODEL", "z-ai/glm-5-turbo")
+VARIANT_B = os.getenv("VARIANT_B_MODEL", "anthropic/claude-sonnet-4")
+ACTIVE_MODEL = VARIANT_A  # 默认跑 Variant A（便宜），演示时可切换到 VARIANT_B
+
 
 # --- 1. 页面基本设置 ---
 st.set_page_config(page_title="Alice ADHD Companion | 多模态主动伴侣", layout="wide")
@@ -30,15 +54,10 @@ st.markdown("""
 
 st.title("🤖 Alice: Multi-modal Proactive Agent \n (腕上多模态陪伴智能体)")
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=st.secrets["OPENROUTER_API_KEY"]
-)
-
 api_client = APIClient(API_BASE_URL)
 
 if "use_backend" not in st.session_state:
-    st.session_state.use_backend = USE_BACKEND_API 
+    st.session_state.use_backend = USE_BACKEND_API
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -51,6 +70,11 @@ if "logs" not in st.session_state:
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# ── 当前激活模型显示（侧边栏用）────────────────────────────────
+if "active_variant" not in st.session_state:
+    st.session_state.active_variant = "A"
+
 
 # 🚀 Tool Calling 定义
 tools = [
@@ -68,9 +92,10 @@ tools = [
     }
 ]
 
+
 def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=None):
     safe_prompt = str(prompt_text).encode('utf-8', 'ignore').decode('utf-8')
-    
+
     is_input_safe, filtered_input, block_type = input_filter.filter(safe_prompt)
     if not is_input_safe:
         return json.dumps({
@@ -81,11 +106,11 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
             "safety_flag": True,
             "clinical_reasoning": f"输入被过滤: {block_type}"
         }), 0, 0
-    
+
     is_crisis, crisis_type, crisis_level = crisis_handler.detect_crisis(filtered_input)
     if is_crisis and crisis_type:
         crisis_response = crisis_handler.get_crisis_response(crisis_type, "zh")
-        
+
         if crisis_handler.should_notify_parent(crisis_type):
             parent_notifier.notify(
                 alert_type=crisis_type,
@@ -94,7 +119,7 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
                 user_input=filtered_input,
                 severity=crisis_level.value
             )
-        
+
         return json.dumps({
             "response_text": crisis_response,
             "emotion": "concerned",
@@ -106,7 +131,7 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
             "safety_flag": True,
             "clinical_reasoning": f"危机检测: {crisis_type}, 级别: {crisis_level.value}"
         }), 0, 0
-    
+
     json_constraint = """
     \n\n【重要指令】你必须严格返回一个 JSON 格式的对象，不包含任何其他的 Markdown 标记。JSON 结构必须如下：
     {
@@ -120,30 +145,33 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
       "safety_flag": false,
       "clinical_reasoning": "你的内部推理（可选）"
     }
-    
+
     注意：
     - response_text 必须简洁，每部分不超过100字
     - emotion 必须是上述选项之一
     - 如果检测到用户情绪不稳定，设置 action 为 "suggest_task" 并提供 micro_task
     - safety_flag 仅在需要关注用户安全时设为 true
     """
-    
+
+    # 根据当前激活的 variant 选择模型
+    model_to_use = VARIANT_B if st.session_state.get("active_variant") == "B" else VARIANT_A
+
     start_time = time.time()
     messages = [{"role": "user", "content": filtered_input + json_constraint}]
-    
+
     response = client.chat.completions.create(
-        model="z-ai/glm-5-turbo",
+        model=model_to_use,
         messages=messages,
         tools=tools,
         tool_choice="auto"
     )
-    
+
     response_message = response.choices[0].message
     tokens = response.usage.total_tokens if hasattr(response, 'usage') else 0
-    
+
     if response_message.tool_calls:
         messages.append(response_message)
-        
+
         for tool_call in response_message.tool_calls:
             if tool_call.function.name == "get_current_biometrics_and_env":
                 function_response = f"【传感器返回】当前心率: {current_hr}bpm, 噪音: {current_noise}dB"
@@ -152,18 +180,18 @@ def get_ai_reply(prompt_text, current_hr=None, current_noise=None, session_id=No
                     "content": function_response,
                     "tool_call_id": tool_call.id,
                 })
-        
+
         second_response = client.chat.completions.create(
-            model="z-ai/glm-5-turbo",
+            model=model_to_use,
             messages=messages,
         )
         final_content = second_response.choices[0].message.content or ""
         tokens += second_response.usage.total_tokens if hasattr(second_response, 'usage') else 0
     else:
         final_content = response_message.content or ""
-    
+
     is_appropriate, filtered_output = output_filter.filter(final_content or "")
-    
+
     latency = round(time.time() - start_time, 2)
     return filtered_output, tokens, latency
 
@@ -178,17 +206,17 @@ with st.sidebar:
 <p style="margin:4px 0; margin-bottom:0;"><b>痛点:</b> 对噪音极度敏感，被打断时容易情绪崩溃</p>
 </div>
 """, unsafe_allow_html=True)
-    
+
     with st.expander("🧪 LLM A/B Testing", expanded=False):
         backend_status = api_client.health_check()
         if backend_status:
             st.success("🟢 后端 API 已连接")
         else:
             st.warning("🔴 后端 API 未连接（使用直接调用模式）")
-        
+
         use_backend = st.checkbox("使用后端 API", value=st.session_state.use_backend, key="backend_toggle")
         st.session_state.use_backend = use_backend
-        
+
         if use_backend and backend_status:
             st.markdown("#### 📋 Profile 选择")
             profiles = api_client.list_profiles()
@@ -199,19 +227,35 @@ with st.sidebar:
             else:
                 st.info("暂无 Profile，使用默认配置")
                 selected_profile_id = "default"
-            
+
             st.markdown("#### 🤖 可用模型")
             models = api_client.list_openrouter_models()
             if models:
                 model_names = [m.get("id", m.get("name", "Unknown")) for m in models[:20]]
                 backend_model = st.selectbox("选择模型：", model_names)
             else:
-                backend_model = "anthropic/claude-sonnet-4"
-        
-        selected_model = st.selectbox("选择底层驱动模型：", ["Variant A: Claude Sonnet 4 + 宪法AI (推荐)", "Variant B: GLM-5 + 本地安全围栏"])
-    
+                backend_model = VARIANT_B
+
+        # ── A/B 切换开关（核心演示功能）────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🔀 当前激活模型")
+        variant_choice = st.radio(
+            "选择驱动模型：",
+            ["Variant A: GLM-5-Turbo（中文原生）", "Variant B: Claude Sonnet 4（宪法AI）"],
+            index=0 if st.session_state.active_variant == "A" else 1
+        )
+        st.session_state.active_variant = "A" if "Variant A" in variant_choice else "B"
+
+        current_model_name = VARIANT_A if st.session_state.active_variant == "A" else VARIANT_B
+        st.caption(f"🤖 当前模型: `{current_model_name}`")
+
+        if st.session_state.active_variant == "A":
+            st.info("🔵 GLM-5-Turbo：本地安全围栏策略，中文原生优化")
+        else:
+            st.warning("🟡 Claude Sonnet 4：宪法AI安全架构，英文推理更强")
+
     st.divider()
-    
+
     with st.expander("🎛️ Sensor Console (传感器控制台)", expanded=True):
         st.markdown("✨ **Quick Demo Scenarios**")
         demo_scenario = st.selectbox(
@@ -226,7 +270,7 @@ with st.sidebar:
                 "6. 商场冲动固着 (Mall Toy Fixation)"
             ]
         )
-        
+
         def_hr, def_hrv, def_att, def_noise = 85, 60, 80, 45
         def_os = "The weather is nice today (今天天气真好)"
         def_loc_idx = 0
@@ -253,10 +297,10 @@ with st.sidebar:
         st.markdown("**🫀 Biometrics**")
         sim_hr = st.slider("心率 (bpm)", min_value=60, max_value=160, value=def_hr, step=1)
         sim_hrv = st.slider("HRV (ms)", min_value=10, max_value=100, value=def_hrv, step=1)
-        
+
         st.markdown("**🧠 BCI & Neuro**")
         sim_attention = st.slider("专注度 (%)", min_value=0, max_value=100, value=def_att, step=1)
-        
+
         st.markdown("**🎙️ Inner OS**")
         os_options = [
             def_os,
@@ -269,30 +313,30 @@ with st.sidebar:
         ]
         os_options = list(dict.fromkeys(os_options))
         selected_os = st.selectbox("快捷话术", os_options)
-        
+
         custom_os = st.text_input("手动输入:", value="" if "Custom Input" not in selected_os else "在此输入")
-        
+
         st.markdown("**🌍 Environmental**")
         sim_noise = st.slider("噪音 (dB)", min_value=30, max_value=120, value=def_noise, step=1)
-        
+
         locations = [
-            "Home - Bedroom", "Home - Living Room", "Home - Dining Table", 
+            "Home - Bedroom", "Home - Living Room", "Home - Dining Table",
             "School - Classroom", "School - Playground", "School - Canteen",
-            "Transport - MTR Train", "Transport - MTR Station", 
+            "Transport - MTR Train", "Transport - MTR Station",
             "Transport - Bus", "Transport - Street",
-            "Public - Mall", "Public - Supermarket", "Public - Restaurant", 
+            "Public - Mall", "Public - Supermarket", "Public - Restaurant",
             "Outdoor - Park", "Outdoor - Theme Park"
         ]
         sim_location = st.selectbox("定位", locations, index=min(def_loc_idx, len(locations)-1))
-    
+
     st.divider()
-    
+
     with st.expander("📡 Observability (系统监控)", expanded=False):
         col_m1, col_m2 = st.columns(2)
         col_m1.metric("🪙 Tokens", f"{st.session_state.metrics['tokens']}")
         avg_lat = 0 if st.session_state.metrics['calls'] == 0 else round(st.session_state.metrics['total_latency'] / st.session_state.metrics['calls'], 2)
         col_m2.metric("⏱️ Latency", f"{avg_lat}s")
-        
+
         log_count = len(st.session_state.get('logs', []))
         st.caption(f"已记录对话: **{log_count}** 条")
 
@@ -306,6 +350,7 @@ with st.sidebar:
                 mime="text/csv",
                 use_container_width=True
             )
+
 
 # --- 3. 核心逻辑：危机分级与路由 ---
 os_signal = custom_os if "Custom Input" in selected_os else selected_os
@@ -343,11 +388,11 @@ with tab_child:
 
     with st.container(border=True):
         col1, col2, col3, col4 = st.columns([1.2, 1.2, 1, 1])
-        
+
         with col1:
             hr_color = "darkred" if sim_hr > 105 else "green"
             fig_hr = go.Figure(go.Indicator(
-                mode="gauge+number", value=sim_hr, title={'text': "心率", 'font': {'size': 14}}, 
+                mode="gauge+number", value=sim_hr, title={'text': "心率", 'font': {'size': 14}},
                 gauge={'axis': {'range': [None, 180]}, 'bar': {'color': hr_color}}
             ))
             fig_hr.update_layout(height=150, margin=dict(l=10, r=10, t=30, b=0))
@@ -356,7 +401,7 @@ with tab_child:
         with col2:
             att_color = "orange" if sim_attention < 40 else "blue"
             fig_att = go.Figure(go.Indicator(
-                mode="gauge+number", value=sim_attention, title={'text': "专注度", 'font': {'size': 14}}, 
+                mode="gauge+number", value=sim_attention, title={'text': "专注度", 'font': {'size': 14}},
                 gauge={'axis': {'range': [None, 100]}, 'bar': {'color': att_color}}
             ))
             fig_att.update_layout(height=150, margin=dict(l=10, r=10, t=30, b=0))
@@ -369,7 +414,7 @@ with tab_child:
         with col4:
             st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
             st.metric(label="🔊 噪音", value=f"{sim_noise} dB", delta="High" if sim_noise > 75 else "Normal", delta_color="inverse")
-        
+
         st.divider()
         st.markdown(f"**🎙️ Inner OS:** `{os_signal}`")
         st.markdown("<br>", unsafe_allow_html=True)
@@ -398,32 +443,33 @@ with tab_child:
 
     if trigger_intervention:
         system_prompt = PromptBuilder.build_scenario_prompt(
-            scenario_type=current_scenario, 
-            sim_hr=sim_hr, 
-            sim_noise=sim_noise, 
-            sim_inner_os=os_signal, 
-            sim_attention=sim_attention, 
+            scenario_type=current_scenario,
+            sim_hr=sim_hr,
+            sim_noise=sim_noise,
+            sim_inner_os=os_signal,
+            sim_attention=sim_attention,
             sim_location=sim_location
         )
-        
+
         with st.chat_message("assistant"):
-            with st.spinner("Alice is sensing the environment... (Triggering Agent Tools)"):
+            active_model_display = VARIANT_B if st.session_state.active_variant == "B" else VARIANT_A
+            with st.spinner(f"Alice is sensing... [{active_model_display}]"):
                 try:
                     raw_response, tokens, latency = get_ai_reply(
-                        system_prompt, 
-                        current_hr=sim_hr, 
+                        system_prompt,
+                        current_hr=sim_hr,
                         current_noise=sim_noise,
                         session_id=st.session_state.session_id
                     )
-                    
+
                     st.session_state.metrics["tokens"] += tokens
                     st.session_state.metrics["calls"] += 1
                     st.session_state.metrics["total_latency"] += latency
-                    
+
                     try:
                         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
                         response_data = json.loads(clean_json)
-                        
+
                         emotion = response_data.get("emotion", "neutral")
                         emotion_colors = {
                             "happy": "#28a745",
@@ -432,13 +478,13 @@ with tab_child:
                             "neutral": "#6c757d"
                         }
                         bg_color = emotion_colors.get(emotion, "#6c757d")
-                        
+
                         response_text = response_data.get('response_text', '')
                         action = response_data.get('action', 'none')
                         safety_flag = response_data.get('safety_flag', False)
                         micro_task = response_data.get('micro_task', {})
                         reasoning = response_data.get('clinical_reasoning', '')
-                        
+
                         if safety_flag:
                             st.warning("⚠️ 安全提醒：此交互已被标记为需要关注")
                             safety_logger.log_event(
@@ -456,24 +502,26 @@ with tab_child:
                                     "location": sim_location
                                 }
                             )
-                        
+
                         if reasoning:
                             st.markdown(f"""
                             <div style="border-left: 4px solid {bg_color}; padding-left: 10px; color: gray; font-size: 0.9em; margin-bottom: 10px;">
-                                🧠 <b>Alice's Reasoning:</b> {reasoning}
+                                🧠 <b>Alice's Reasoning [{active_model_display}]:</b> {reasoning}
                             </div>
                             """, unsafe_allow_html=True)
-                        
+
                         st.markdown(f"**🗣️ Alice:** \n\n {response_text}")
-                        
+
                         if micro_task and micro_task.get('description'):
                             st.info(f"💡 微任务建议: {micro_task.get('description')} (难度: {micro_task.get('difficulty', 'easy')})")
-                        
+
                         st.session_state.messages.append({"role": "assistant", "content": response_text})
-                        
+
                         st.session_state.logs.append({
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "interaction_type": "Proactive Intervention",
+                            "model_used": active_model_display,
+                            "variant": st.session_state.active_variant,
                             "scenario": current_scenario,
                             "location": sim_location.split(' ')[0],
                             "hr": sim_hr,
@@ -486,12 +534,12 @@ with tab_child:
                             "latency_sec": latency,
                             "tokens_used": tokens
                         })
-                        
+
                     except json.JSONDecodeError:
                         formatted_response = raw_response.replace('\n', '  \n\n')
                         st.markdown(formatted_response)
                         st.session_state.messages.append({"role": "assistant", "content": formatted_response})
-                        
+
                 except Exception as e:
                     st.error(f"Error (出错): {e}")
 
@@ -499,32 +547,33 @@ with tab_child:
         with st.chat_message("user"):
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
+
         with st.chat_message("assistant"):
-            with st.spinner("Alice is thinking... (Agent reasoning loop)"):
+            active_model_display = VARIANT_B if st.session_state.active_variant == "B" else VARIANT_A
+            with st.spinner(f"Alice is thinking... [{active_model_display}]"):
                 try:
                     chat_scenario = "danger_alert" if any(word in prompt.lower() for word in danger_keywords) else "normal"
                     base_persona = PromptBuilder.build_scenario_prompt(chat_scenario, sim_inner_os=prompt, sim_location=sim_location)
                     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[:-1]])
                     full_prompt = f"{base_persona}\n\n[Conversation History]:\n{history_text}\n\n[User's latest input]: '{prompt}'"
-                    
+
                     raw_response, tokens, latency = get_ai_reply(
-                        full_prompt, 
-                        current_hr=sim_hr, 
+                        full_prompt,
+                        current_hr=sim_hr,
                         current_noise=sim_noise,
                         session_id=st.session_state.session_id
                     )
-                    
+
                     st.session_state.metrics["tokens"] += tokens
                     st.session_state.metrics["calls"] += 1
                     st.session_state.metrics["total_latency"] += latency
-                    
+
                     try:
                         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
                         response_data = json.loads(clean_json)
                         reasoning = response_data.get('clinical_reasoning', '')
                         spoken_text = response_data.get('response_text', raw_response)
-                        
+
                         emotion_colors = {
                             "happy": "#28a745",
                             "encouraging": "#17a2b8",
@@ -532,22 +581,24 @@ with tab_child:
                             "neutral": "#6c757d"
                         }
                         bg_color = emotion_colors.get(response_data.get("emotion", "neutral"), "#6c757d")
-                        
+
                         st.markdown(f"""
                         <div style="border-left: 4px solid {bg_color}; padding-left: 10px; color: gray; font-size: 0.9em; margin-bottom: 10px;">
-                            🧠 <b>Alice's Reasoning:</b> {reasoning}
+                            🧠 <b>Alice's Reasoning [{active_model_display}]:</b> {reasoning}
                         </div>
                         """, unsafe_allow_html=True)
                         st.markdown(spoken_text)
-                        
+
                         st.session_state.messages.append({
-                            "role": "assistant", 
+                            "role": "assistant",
                             "content": f"<div style='color:gray; font-size:0.8em; margin-bottom:5px;'>*{reasoning}*</div>{spoken_text}"
                         })
-                        
+
                         st.session_state.logs.append({
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "interaction_type": "Chat Follow-up",
+                            "model_used": active_model_display,
+                            "variant": st.session_state.active_variant,
                             "scenario": chat_scenario,
                             "location": sim_location.split(' ')[0],
                             "hr": sim_hr,
@@ -560,7 +611,7 @@ with tab_child:
                             "latency_sec": latency,
                             "tokens_used": tokens
                         })
-                        
+
                     except Exception:
                         st.markdown(raw_response)
                         st.session_state.messages.append({"role": "assistant", "content": raw_response})
@@ -568,7 +619,7 @@ with tab_child:
                     st.error(f"Error: {e}")
 
 
-# --- 家长监控端（全部使用真实 session logs）---
+# --- 家长监控端 ---
 with tab_parent:
     st.markdown("### 👨‍👩‍👦 家长 & 教师 Dashboard")
 
@@ -593,33 +644,26 @@ with tab_parent:
     else:
         df_f = pd.DataFrame()
 
-    # KPI 全部来自真实 logs
     col1, col2, col3, col4 = st.columns(4)
 
     if not df_f.empty:
-        alert_count    = len(df_f[df_f["scenario"] != "normal"])
-        avg_attention  = int(df_f["attention"].mean())
-        high_risk_n    = int(((df_f["hr"] > 105) | (df_f["noise"] > 75)).sum())
-        crisis_n       = len(df_f[df_f["scenario"] == "danger_alert"])
+        alert_count   = len(df_f[df_f["scenario"] != "normal"])
+        avg_attention = int(df_f["attention"].mean())
+        high_risk_n   = int(((df_f["hr"] > 105) | (df_f["noise"] > 75)).sum())
+        crisis_n      = len(df_f[df_f["scenario"] == "danger_alert"])
     else:
         alert_count = avg_attention = high_risk_n = crisis_n = 0
 
     with col1:
-        st.metric("🚨 触发警报", f"{alert_count} 次",
-                  help="场景不为 normal 的互动次数")
+        st.metric("🚨 触发警报", f"{alert_count} 次", help="场景不为 normal 的互动次数")
     with col2:
-        st.metric("🧠 平均专注度", f"{avg_attention}%" if avg_attention else "暂无数据",
-                  help="本次会话内所有交互的平均专注度")
+        st.metric("🧠 平均专注度", f"{avg_attention}%" if avg_attention else "暂无数据", help="所有交互的平均专注度")
     with col3:
-        st.metric("⚠️ 高危环境互动", f"{high_risk_n} 次",
-                  help="心率 >105bpm 或 噪音 >75dB 时的互动")
+        st.metric("⚠️ 高危环境互动", f"{high_risk_n} 次", help="心率 >105bpm 或 噪音 >75dB 时的互动")
     with col4:
-        st.metric("🛡️ 危机拦截", f"{crisis_n} 次",
-                  help="触发 danger_alert 的互动次数")
+        st.metric("🛡️ 危机拦截", f"{crisis_n} 次", help="触发 danger_alert 的互动次数")
 
     st.divider()
-
-    # 趋势图
     st.markdown("#### 📈 互动趋势")
 
     if not df_f.empty and len(df_f) >= 2:
@@ -661,14 +705,29 @@ with tab_parent:
 
     st.divider()
 
-    # 真实警报记录表
+    # ── A/B 对比分析（新增）────────────────────────────────────
+    if not df_f.empty and "variant" in df_f.columns:
+        st.markdown("#### 🔀 A/B 模型对比分析")
+        ab_df = df_f.groupby("variant").agg(
+            互动次数=("timestamp", "count"),
+            平均延迟=("latency_sec", "mean"),
+            平均tokens=("tokens_used", "mean")
+        ).reset_index()
+        ab_df["平均延迟"] = ab_df["平均延迟"].round(2)
+        ab_df["平均tokens"] = ab_df["平均tokens"].round(0)
+        ab_df["variant"] = ab_df["variant"].map({"A": f"A: {VARIANT_A}", "B": f"B: {VARIANT_B}"})
+        st.dataframe(ab_df, use_container_width=True, hide_index=True)
+        st.divider()
+
     st.markdown("#### 🚨 互动记录（Real Session Logs）")
 
     if not df_f.empty:
-        alert_df = df_f[df_f["scenario"] != "normal"][[
-            "timestamp", "scenario", "location", "hr", "noise", "attention", "user_input"
-        ]].copy()
-        alert_df.columns = ["时间", "场景", "地点", "心率", "噪音", "专注度", "触发话语"]
+        display_cols = ["timestamp", "scenario", "location", "hr", "noise", "attention", "user_input"]
+        if "variant" in df_f.columns:
+            display_cols.insert(2, "variant")
+        alert_df = df_f[df_f["scenario"] != "normal"][display_cols].copy()
+        col_names = ["时间", "场景", "Variant", "地点", "心率", "噪音", "专注度", "触发话语"] if "variant" in df_f.columns else ["时间", "场景", "地点", "心率", "噪音", "专注度", "触发话语"]
+        alert_df.columns = col_names
         alert_df["时间"] = alert_df["时间"].dt.strftime("%m-%d %H:%M")
         st.dataframe(alert_df, use_container_width=True, hide_index=True)
 
@@ -707,13 +766,13 @@ with col_f1:
     st.markdown("""
     **🚀 部署与可持续性 (Deployment Roadmap):**
     - **学校私有化部署:** 计划采用 Qwen-2.5 32B 本地运行，确保儿童敏感数据不出校园。
-    - **云端多模态 A/B 测试:** 采用 OpenRouter 路由机制对比不同底座模型 (如 GLM-4 vs Claude Sonnet 4) 的安全合规率。
+    - **云端多模态 A/B 测试:** 采用 OpenRouter 路由机制对比不同底座模型 (如 GLM-5 vs Claude Sonnet 4) 的安全合规率。
     - **规则维护机制:** 7条核心安全围栏 (Safety Fence) 将由合作的临床心理学家进行双周评估与更新。
     """)
 with col_f2:
     st.info("""
     **📡 港铁开放数据融合 (HK Open Data API - Concept):**
-    
+
     当系统检测定位在 `MTR` 时，将自动调用 DATA.GOV.HK 接口获取前方到站拥挤度：
     * **Trigger:** [Admiralty Station Density > 80% (Red)]
     * **Action:** Alice 将在到站前 2 分钟提前触发 Pre-soothing (预安抚) 语音策略，引导 Lok 进行深呼吸，有效降低幽闭空间带来的被动过载。
