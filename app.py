@@ -1,3 +1,7 @@
+import streamlit as st
+
+# 临时检查：确认 secret 读到了（用完记得删掉）
+st.write("Key loaded:", bool(st.secrets.get("OPENROUTER_API_KEY")))
 import sys
 import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -32,9 +36,10 @@ st.markdown("""
 st.title("🤖 Alice: Multi-modal Proactive Agent \n (腕上多模态陪伴智能体)")
 
 # 💡 注意：本地测试时先填入您的真实KEY，上传GitHub时请改回 st.secrets["ZHIPU_API_KEY"]
+import streamlit as st
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY")
+    api_key=st.secrets["OPENROUTER_API_KEY"]
 )
 
 api_client = APIClient(API_BASE_URL)
