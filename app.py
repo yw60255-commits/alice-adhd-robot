@@ -1,7 +1,3 @@
-import streamlit as st
-
-# 临时检查：确认 secret 读到了（用完记得删掉）
-st.write("Key loaded:", bool(st.secrets.get("OPENROUTER_API_KEY")))
 import sys
 import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
