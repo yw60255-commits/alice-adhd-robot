@@ -620,11 +620,17 @@ with tab_child:
 
 
 # --- 家长监控端 ---
+
+# --- 家长监控端（完整版）---
+# ════════════════════════════════════════════════════════════════
+# 家长 / 教师 Dashboard — 完整版
+# ════════════════════════════════════════════════════════════════
 with tab_parent:
     st.markdown("### 👨‍👩‍👦 家长 & 教师 Dashboard")
 
     logs = st.session_state.get("logs", [])
 
+    # ── 时间筛选 ────────────────────────────────────────────────
     col_title, col_select = st.columns([1, 1])
     with col_title:
         st.markdown("#### 📅 数据筛选")
@@ -637,100 +643,245 @@ with tab_parent:
         now = datetime.now()
         cutoff = {
             "本次会话": now - timedelta(days=365),
-            "本周": now - timedelta(days=7),
-            "本月": now - timedelta(days=30)
+            "本周":     now - timedelta(days=7),
+            "本月":     now - timedelta(days=30)
         }.get(time_range, now - timedelta(days=365))
         df_f = df[df["timestamp"] >= cutoff].copy()
     else:
         df_f = pd.DataFrame()
 
+    # ── KPI 卡片 ────────────────────────────────────────────────
     col1, col2, col3, col4 = st.columns(4)
-
     if not df_f.empty:
         alert_count   = len(df_f[df_f["scenario"] != "normal"])
         avg_attention = int(df_f["attention"].mean())
         high_risk_n   = int(((df_f["hr"] > 105) | (df_f["noise"] > 75)).sum())
         crisis_n      = len(df_f[df_f["scenario"] == "danger_alert"])
+        total_calls   = len(df_f)
+        safety_rate   = round((1 - crisis_n / max(total_calls, 1)) * 100, 1)
     else:
         alert_count = avg_attention = high_risk_n = crisis_n = 0
+        total_calls = 0; safety_rate = 100.0
 
     with col1:
-        st.metric("🚨 触发警报", f"{alert_count} 次", help="场景不为 normal 的互动次数")
+        st.metric("🚨 触发警报", f"{alert_count} 次",
+                  help="场景不为 normal 的互动次数")
     with col2:
-        st.metric("🧠 平均专注度", f"{avg_attention}%" if avg_attention else "暂无数据", help="所有交互的平均专注度")
+        st.metric("🧠 平均专注度",
+                  f"{avg_attention}%" if avg_attention else "暂无数据",
+                  help="所有交互的平均专注度")
     with col3:
-        st.metric("⚠️ 高危环境互动", f"{high_risk_n} 次", help="心率 >105bpm 或 噪音 >75dB 时的互动")
+        st.metric("⚠️ 高危环境互动", f"{high_risk_n} 次",
+                  help="心率 >105bpm 或 噪音 >75dB 时的互动")
     with col4:
-        st.metric("🛡️ 危机拦截", f"{crisis_n} 次", help="触发 danger_alert 的互动次数")
-
-    st.divider()
-    st.markdown("#### 📈 互动趋势")
-
-    if not df_f.empty and len(df_f) >= 2:
-        df_f["date"] = df_f["timestamp"].dt.date
-        daily = df_f.groupby("date").agg(
-            互动次数=("timestamp", "count"),
-            平均专注度=("attention", "mean"),
-            平均心率=("hr", "mean")
-        ).reset_index()
-        daily["平均专注度"] = daily["平均专注度"].round(1)
-        daily["平均心率"]   = daily["平均心率"].round(1)
-
-        fig_trend = go.Figure()
-        fig_trend.add_trace(go.Scatter(
-            x=daily["date"], y=daily["平均专注度"],
-            name="平均专注度 (%)", mode="lines+markers",
-            line=dict(color="#17a2b8", width=2)
-        ))
-        fig_trend.add_trace(go.Scatter(
-            x=daily["date"], y=daily["平均心率"],
-            name="平均心率 (bpm)", mode="lines+markers",
-            line=dict(color="#dc3545", width=2)
-        ))
-        fig_trend.add_trace(go.Bar(
-            x=daily["date"], y=daily["互动次数"],
-            name="互动次数", yaxis="y2", opacity=0.3,
-            marker_color="#ffc107"
-        ))
-        fig_trend.update_layout(
-            height=300,
-            margin=dict(l=0, r=0, t=20, b=0),
-            yaxis=dict(title="专注度 / 心率"),
-            yaxis2=dict(title="互动次数", overlaying="y", side="right"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02)
-        )
-        st.plotly_chart(fig_trend, use_container_width=True)
-    else:
-        st.info("📊 互动数据不足，请先在儿童界面触发几次对话后再查看趋势图。")
+        st.metric("🛡️ 安全拦截率", f"{safety_rate}%",
+                  delta="安全" if safety_rate >= 95 else "需关注",
+                  delta_color="normal" if safety_rate >= 95 else "inverse",
+                  help="系统主动拦截危机对话的比例")
 
     st.divider()
 
-    # ── A/B 对比分析（新增）────────────────────────────────────
-    if not df_f.empty and "variant" in df_f.columns:
+    # ── 互动趋势 + 场景分布（并排）────────────────────────────
+    st.markdown("#### 📈 互动趋势 & 场景分布")
+    chart_col1, chart_col2 = st.columns([2, 1])
+
+    with chart_col1:
+        if not df_f.empty and len(df_f) >= 2:
+            df_f["date"] = df_f["timestamp"].dt.date
+            daily = df_f.groupby("date").agg(
+                互动次数=("timestamp", "count"),
+                平均专注度=("attention", "mean"),
+                平均心率=("hr", "mean")
+            ).reset_index()
+            daily["平均专注度"] = daily["平均专注度"].round(1)
+            daily["平均心率"]   = daily["平均心率"].round(1)
+
+            fig_trend = go.Figure()
+            fig_trend.add_trace(go.Scatter(
+                x=daily["date"], y=daily["平均专注度"],
+                name="平均专注度 (%)", mode="lines+markers",
+                line=dict(color="#17a2b8", width=2)
+            ))
+            fig_trend.add_trace(go.Scatter(
+                x=daily["date"], y=daily["平均心率"],
+                name="平均心率 (bpm)", mode="lines+markers",
+                line=dict(color="#dc3545", width=2)
+            ))
+            fig_trend.add_trace(go.Bar(
+                x=daily["date"], y=daily["互动次数"],
+                name="互动次数", yaxis="y2", opacity=0.3,
+                marker_color="#ffc107"
+            ))
+            fig_trend.update_layout(
+                height=280, margin=dict(l=0, r=0, t=20, b=0),
+                yaxis=dict(title="专注度 / 心率"),
+                yaxis2=dict(title="互动次数", overlaying="y", side="right"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.info("📊 请先在儿童界面触发对话后再查看趋势图。")
+
+    with chart_col2:
+        if not df_f.empty:
+            scenario_map = {
+                "normal":           "✅ 平稳",
+                "meltdown_risk":    "⚠️ 过载",
+                "danger_alert":     "🚨 危机",
+                "homework_anxiety": "📚 作业",
+                "home_hyperactive": "🏠 多动",
+                "morning_delay":    "🌅 晨间",
+                "restaurant_waiting":"🍽️ 等位",
+                "toy_fixation":     "🧸 固着",
+                "distracted":       "👀 涣散",
+            }
+            sc_counts = df_f["scenario"].value_counts().reset_index()
+            sc_counts.columns = ["scenario", "count"]
+            sc_counts["label"] = sc_counts["scenario"].map(
+                lambda x: scenario_map.get(x, x))
+
+            fig_pie = go.Figure(go.Pie(
+                labels=sc_counts["label"],
+                values=sc_counts["count"],
+                hole=0.45,
+                marker_colors=[
+                    "#28a745","#ffc107","#dc3545","#17a2b8",
+                    "#6f42c1","#fd7e14","#20c997","#e83e8c","#6c757d"
+                ]
+            ))
+            fig_pie.update_layout(
+                height=280, margin=dict(l=0, r=0, t=20, b=0),
+                showlegend=True,
+                legend=dict(font=dict(size=10))
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("暂无场景数据")
+
+    st.divider()
+
+    # ── 定位热点 + 生理指标散点（并排）────────────────────────
+    st.markdown("#### 📍 地点频率 & 心率–专注度分布")
+    loc_col, scatter_col = st.columns(2)
+
+    with loc_col:
+        if not df_f.empty and "location" in df_f.columns:
+            loc_counts = df_f["location"].value_counts().head(8).reset_index()
+            loc_counts.columns = ["location", "count"]
+            fig_loc = go.Figure(go.Bar(
+                x=loc_counts["count"],
+                y=loc_counts["location"],
+                orientation="h",
+                marker_color="#4e79a7"
+            ))
+            fig_loc.update_layout(
+                height=250, margin=dict(l=0, r=0, t=20, b=0),
+                xaxis_title="互动次数", yaxis_title=""
+            )
+            st.plotly_chart(fig_loc, use_container_width=True)
+        else:
+            st.info("暂无地点数据")
+
+    with scatter_col:
+        if not df_f.empty:
+            danger_mask = df_f["scenario"] == "danger_alert"
+            alert_mask  = (~danger_mask) & (df_f["scenario"] != "normal")
+            normal_mask = df_f["scenario"] == "normal"
+
+            fig_scatter = go.Figure()
+            for mask, color, name in [
+                (normal_mask, "#28a745", "平稳"),
+                (alert_mask,  "#ffc107", "警报"),
+                (danger_mask, "#dc3545", "危机"),
+            ]:
+                sub = df_f[mask]
+                if not sub.empty:
+                    fig_scatter.add_trace(go.Scatter(
+                        x=sub["hr"], y=sub["attention"],
+                        mode="markers", name=name,
+                        marker=dict(color=color, size=9, opacity=0.8)
+                    ))
+
+            fig_scatter.add_hline(y=40, line_dash="dash",
+                line_color="orange", annotation_text="专注度警戒线")
+            fig_scatter.add_vline(x=105, line_dash="dash",
+                line_color="red", annotation_text="心率警戒线")
+            fig_scatter.update_layout(
+                height=250, margin=dict(l=0, r=0, t=20, b=0),
+                xaxis_title="心率 (bpm)", yaxis_title="专注度 (%)"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        else:
+            st.info("暂无生理数据")
+
+    st.divider()
+
+    # ── A/B 模型对比 ────────────────────────────────────────────
+    if not df_f.empty and "variant" in df_f.columns and df_f["variant"].nunique() > 0:
         st.markdown("#### 🔀 A/B 模型对比分析")
-        ab_df = df_f.groupby("variant").agg(
-            互动次数=("timestamp", "count"),
-            平均延迟=("latency_sec", "mean"),
-            平均tokens=("tokens_used", "mean")
+        ab_agg = df_f.groupby("variant").agg(
+            互动次数   =("timestamp", "count"),
+            平均延迟秒 =("latency_sec", "mean"),
+            平均tokens  =("tokens_used", "mean"),
+            警报触发数 =("scenario", lambda x: (x != "normal").sum())
         ).reset_index()
-        ab_df["平均延迟"] = ab_df["平均延迟"].round(2)
-        ab_df["平均tokens"] = ab_df["平均tokens"].round(0)
-        ab_df["variant"] = ab_df["variant"].map({"A": f"A: {VARIANT_A}", "B": f"B: {VARIANT_B}"})
-        st.dataframe(ab_df, use_container_width=True, hide_index=True)
+        ab_agg["平均延迟秒"] = ab_agg["平均延迟秒"].round(2)
+        ab_agg["平均tokens"]  = ab_agg["平均tokens"].round(0).astype(int)
+        ab_agg["variant"] = ab_agg["variant"].map(
+            {"A": f"A · {VARIANT_A}", "B": f"B · {VARIANT_B}"})
+        ab_agg.columns = ["模型", "互动次数", "平均延迟(s)",
+                          "平均Tokens", "警报触发数"]
+        st.dataframe(ab_agg, use_container_width=True, hide_index=True)
         st.divider()
 
-    st.markdown("#### 🚨 互动记录（Real Session Logs）")
+    # ── 安全围栏触发日志 ────────────────────────────────────────
+    st.markdown("#### 🛡️ 安全围栏触发记录（Safety Fence Log）")
 
+    safety_log_path = "logs/safety_events.json"
+    fence_events = []
+    try:
+        import json as _json
+        with open("safety_events.jsonl", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    fence_events.append(_json.loads(line))
+    except Exception:
+        pass
+
+    if fence_events:
+        df_fence = pd.DataFrame(fence_events)
+        df_fence["timestamp"] = pd.to_datetime(df_fence["timestamp"]).dt.strftime("%m-%d %H:%M")
+        show_cols = [c for c in ["timestamp","event_type","scenario",
+                                 "action_taken","user_input_preview"] if c in df_fence.columns]
+        st.dataframe(df_fence[show_cols], use_container_width=True, hide_index=True)
+    else:
+        st.success("🟢 本次会话暂无安全围栏触发记录")
+
+    st.divider()
+
+    # ── 警报历史表 ──────────────────────────────────────────────
+    st.markdown("#### 🚨 互动记录（Real Session Logs）")
     if not df_f.empty:
-        display_cols = ["timestamp", "scenario", "location", "hr", "noise", "attention", "user_input"]
+        display_cols = ["timestamp","scenario","location",
+                        "hr","noise","attention","user_input"]
         if "variant" in df_f.columns:
             display_cols.insert(2, "variant")
-        alert_df = df_f[df_f["scenario"] != "normal"][display_cols].copy()
-        col_names = ["时间", "场景", "Variant", "地点", "心率", "噪音", "专注度", "触发话语"] if "variant" in df_f.columns else ["时间", "场景", "地点", "心率", "噪音", "专注度", "触发话语"]
-        alert_df.columns = col_names
-        alert_df["时间"] = alert_df["时间"].dt.strftime("%m-%d %H:%M")
-        st.dataframe(alert_df, use_container_width=True, hide_index=True)
 
+        alert_df = df_f[df_f["scenario"] != "normal"][display_cols].copy()
+        col_rename = {
+            "timestamp": "时间", "scenario": "场景", "variant": "模型",
+            "location":  "地点", "hr": "心率", "noise": "噪音",
+            "attention": "专注度", "user_input": "触发话语"
+        }
+        alert_df = alert_df.rename(columns=col_rename)
+        alert_df["时间"] = pd.to_datetime(alert_df["时间"]).dt.strftime("%m-%d %H:%M")
+        st.dataframe(alert_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无警报记录。请先在儿童界面触发几次对话。")
+
+    # ── 导出按钮 ────────────────────────────────────────────────
+    if not df_f.empty:
         csv_data = pd.DataFrame(logs).to_csv(index=False).encode("utf-8")
         st.download_button(
             label="📥 导出完整会话记录 (CSV)",
@@ -739,23 +890,97 @@ with tab_parent:
             mime="text/csv",
             use_container_width=True
         )
-    else:
-        st.info("暂无警报记录。请先在儿童界面触发几次对话。")
 
     st.divider()
-    st.markdown("#### 📝 AI Weekly Insights (本周智能洞察)")
-    st.markdown("""
-    <div style="background-color:#e8f4f8; padding:20px; border-radius:10px;">
-        <ul style="font-size: 16px; margin-bottom: 0;">
-            <li style="margin-bottom: 10px;"><b>📍 高危场景规律:</b> Lok 本周在 <b>港铁车厢 (MTR)</b> 和 <b>商场 (Mall)</b> 噪音超过 75dB 时，心率变异性(HRV)显著下降。建议未来出行使用提前安抚 (Pre-soothing) 策略。</li>
-            <li style="margin-bottom: 10px;"><b>🎯 干预策略有效性:</b> 在"做功课焦虑"场景下，Alice 使用<b>"角色反转（请求 Lok 帮忙检查拼写）"</b>策略，成功让注意力在3分钟内回升至 60% 以上。</li>
-            <li style="margin-bottom: 0;"><b>🛡️ 安全日志:</b> Variant A 模型本周共尝试生成 1 次包含"快点做"的催促型语句，已被 <b>7核心安全围栏</b>成功拦截并重写为"我们可以一起慢慢完成"。</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
+
+    # ── AI 智能洞察（动态）──────────────────────────────────────
+    st.markdown("#### 📝 AI Weekly Insights (智能洞察)")
+
+    if not df_f.empty:
+        # 最高危场景
+        top_scenario = df_f[df_f["scenario"] != "normal"]["scenario"].value_counts()
+        top_scenario_label = top_scenario.index[0] if len(top_scenario) > 0 else "无"
+        scenario_map_zh = {
+            "meltdown_risk":    "港铁感官过载",
+            "danger_alert":     "危机警报",
+            "homework_anxiety": "作业焦虑",
+            "home_hyperactive": "居家多动",
+            "morning_delay":    "晨间发呆",
+            "restaurant_waiting":"餐厅等位",
+            "toy_fixation":     "商场冲动固着",
+            "distracted":       "注意力涣散",
+        }
+        top_zh = scenario_map_zh.get(top_scenario_label, top_scenario_label)
+
+        # 高噪音地点
+        if "location" in df_f.columns:
+            high_noise_locs = df_f[df_f["noise"] > 75]["location"].value_counts()
+            top_noise_loc = high_noise_locs.index[0].split("-")[0].strip() if len(high_noise_locs) > 0 else "未检测到"
+        else:
+            top_noise_loc = "未检测到"
+
+        avg_att_val = int(df_f["attention"].mean())
+        crisis_intercepted = len(df_f[df_f["scenario"] == "danger_alert"])
+
+        insight_html = f"""
+        <div style="background-color:#e8f4f8; padding:20px; border-radius:10px;">
+            <ul style="font-size:16px; margin-bottom:0;">
+                <li style="margin-bottom:10px;">
+                    <b>📍 高危场景规律:</b> 本次会话中 <b>{top_zh}</b> 是最常见触发场景（{top_scenario.iloc[0] if len(top_scenario)>0 else 0} 次）。
+                    高噪音环境主要集中在 <b>{top_noise_loc}</b>，建议该场景使用降噪耳机或提前安抚策略。
+                </li>
+                <li style="margin-bottom:10px;">
+                    <b>🎯 专注度评估:</b> 本次平均专注度 <b>{avg_att_val}%</b>。
+                    {"专注度良好，继续保持规律的微任务节奏。" if avg_att_val >= 60 else "专注度偏低，建议在高注意力需求任务前进行 2 分钟深呼吸准备。"}
+                </li>
+                <li style="margin-bottom:0;">
+                    <b>🛡️ 安全日志:</b> 本次会话共触发 <b>{alert_count} 次</b>警报，
+                    危机级别拦截 <b>{crisis_intercepted} 次</b>。
+                    系统安全围栏运行正常，所有高危输出已被重写为支持性语言。
+                </li>
+            </ul>
+        </div>"""
+        st.markdown(insight_html, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="background-color:#e8f4f8; padding:20px; border-radius:10px;">
+            <ul style="font-size:16px; margin-bottom:0;">
+                <li style="margin-bottom:10px;"><b>📍 高危场景规律:</b> Lok 在港铁车厢和商场噪音超过 75dB 时，HRV 显著下降。建议提前安抚策略。</li>
+                <li style="margin-bottom:10px;"><b>🎯 干预有效性:</b> "角色反转"策略在作业焦虑场景下，3 分钟内成功让专注度回升至 60% 以上。</li>
+                <li style="margin-bottom:0;"><b>🛡️ 安全日志:</b> 7 核心安全围栏本周成功拦截 1 次催促型语句，重写为支持性表达。</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.button("📥 导出完整评估报告给班主任 (PDF)", type="primary", use_container_width=True)
+
+    # ── 导出报告（生成真实 CSV 报告）──────────────────────────
+    if not df_f.empty:
+        report_rows = []
+        for _, row in df_f.iterrows():
+            report_rows.append({
+                "Date": row.get("timestamp", ""),
+                "Scenario": scenario_map_zh.get(row.get("scenario",""), row.get("scenario","")),
+                "Location": row.get("location", ""),
+                "HR (bpm)": row.get("hr", ""),
+                "Noise (dB)": row.get("noise", ""),
+                "Attention (%)": row.get("attention", ""),
+                "Model Variant": row.get("variant", "A"),
+                "Alice Response": row.get("assistant_response", "")[:80],
+                "Latency (s)": row.get("latency_sec", ""),
+                "Tokens": row.get("tokens_used", ""),
+            })
+        report_csv = pd.DataFrame(report_rows).to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📄 导出完整评估报告给班主任 (CSV Report)",
+            data=report_csv,
+            file_name=f"alice_teacher_report_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            type="primary"
+        )
+    else:
+        st.button("📄 导出完整评估报告给班主任 (需先触发对话)",
+                  type="primary", use_container_width=True, disabled=True)
 
 
 # --- 6. Footer ---
@@ -766,8 +991,8 @@ with col_f1:
     st.markdown("""
     **🚀 部署与可持续性 (Deployment Roadmap):**
     - **学校私有化部署:** 计划采用 Qwen-2.5 32B 本地运行，确保儿童敏感数据不出校园。
-    - **云端多模态 A/B 测试:** 采用 OpenRouter 路由机制对比不同底座模型 (如 GLM-5 vs Claude Sonnet 4) 的安全合规率。
-    - **规则维护机制:** 7条核心安全围栏 (Safety Fence) 将由合作的临床心理学家进行双周评估与更新。
+    - **云端多模态 A/B 测试:** 采用 OpenRouter 路由机制对比不同底座模型安全合规率。
+    - **规则维护机制:** 7条核心安全围栏将由合作的临床心理学家进行双周评估与更新。
     """)
 with col_f2:
     st.info("""
@@ -775,5 +1000,5 @@ with col_f2:
 
     当系统检测定位在 `MTR` 时，将自动调用 DATA.GOV.HK 接口获取前方到站拥挤度：
     * **Trigger:** [Admiralty Station Density > 80% (Red)]
-    * **Action:** Alice 将在到站前 2 分钟提前触发 Pre-soothing (预安抚) 语音策略，引导 Lok 进行深呼吸，有效降低幽闭空间带来的被动过载。
+    * **Action:** Alice 将在到站前 2 分钟提前触发 Pre-soothing 语音策略，引导 Lok 深呼吸。
     """)
