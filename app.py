@@ -209,6 +209,10 @@ if "use_backend" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# api_messages：传给 OpenRouter 的真正多轮对话历史（纯 role/content，无 HTML）
+if "api_messages" not in st.session_state:
+    st.session_state.api_messages = []
+
 if "metrics" not in st.session_state:
     st.session_state.metrics = {"tokens": 0, "calls": 0, "total_latency": 0.0}
 
@@ -384,7 +388,7 @@ tools = [
 ]
 
 
-def get_ai_reply(user_input_text, system_prompt=None, current_hr=None, current_noise=None, session_id=None):
+def get_ai_reply(user_input_text, system_prompt=None, api_history=None, current_hr=None, current_noise=None, session_id=None):
     """
     双轨架构核心函数（修复版）：
     - system_prompt: Safety Fence + 角色设定，通过 role:system 传递，模型层面硬约束
@@ -457,6 +461,9 @@ def get_ai_reply(user_input_text, system_prompt=None, current_hr=None, current_n
             "role": "system",
             "content": system_prompt   # PromptBuilder 生成的完整角色 + Safety Fence
         })
+    # ✅ 注入真实多轮对话历史（纯文本，无 HTML）
+    if api_history:
+        messages.extend(api_history)
     messages.append({
         "role": "user",
         "content": filtered_input + json_constraint
@@ -801,6 +808,8 @@ with tab_child:
             for _k in st.session_state.fence_status:
                 st.session_state.fence_status[_k] = "pending"
             st.session_state["_fence_just_reset"] = True
+            st.session_state.messages = []       # 清空 UI 聊天历史
+            st.session_state.api_messages = []   # 清空 API 多轮历史
 
     # ── Safety Fence 实时状态栏 ───────────────────────────────
     # 重置后跳过本帧自动计算，确保 pending 状态能被看到
@@ -979,19 +988,11 @@ with tab_child:
                         sim_location=sim_location
                     )
 
-                    # ✅ 历史记录只取纯文本 content，不含 HTML
-                    history_text = "\n".join([
-                        f"{m['role']}: {m['content']}"
-                        for m in st.session_state.messages[:-1]
-                    ])
-                    user_msg = (
-                        f"[对话历史]\n{history_text}\n\n[用户最新说]: {prompt}"
-                        if history_text else prompt
-                    )
-
+                    # ✅ 使用 api_messages 实现真正多轮对话（纯文本，无 HTML 污染）
                     raw_response, tokens, latency = get_ai_reply(
-                        user_input_text=user_msg,           # 对话历史 + 最新输入
+                        user_input_text=prompt,             # 只传最新输入
                         system_prompt=chat_system_prompt,   # Safety Fence 在 system 层生效
+                        api_history=st.session_state.api_messages,  # 真正多轮历史
                         current_hr=sim_hr,
                         current_noise=sim_noise,
                         session_id=st.session_state.session_id
@@ -1022,11 +1023,17 @@ with tab_child:
                         """, unsafe_allow_html=True)
                         st.markdown(spoken_text)
 
-                        # ✅ 只存纯文本，确保历史传给模型时无 HTML 污染
+                        # ✅ UI 消息列表（用于页面渲染）
                         st.session_state.messages.append({
                             "role": "assistant",
                             "content": spoken_text
                         })
+                        # ✅ API 消息列表（用于多轮对话传入模型，纯文本无 HTML）
+                        st.session_state.api_messages.append({"role": "user", "content": prompt})
+                        st.session_state.api_messages.append({"role": "assistant", "content": spoken_text})
+                        # 防止 token 超限：只保留最近 20 条（10轮对话）
+                        if len(st.session_state.api_messages) > 20:
+                            st.session_state.api_messages = st.session_state.api_messages[-20:]
 
                         _log_record_2 = {
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
