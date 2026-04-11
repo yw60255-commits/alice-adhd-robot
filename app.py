@@ -659,7 +659,7 @@ with st.sidebar:
                 data=csv_data,
                 file_name=f"alice_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
 
 
@@ -707,7 +707,7 @@ with tab_child:
                 gauge={'axis': {'range': [None, 180]}, 'bar': {'color': hr_color}}
             ))
             fig_hr.update_layout(height=170, margin=dict(l=10, r=10, t=50, b=10))
-            st.plotly_chart(fig_hr, use_container_width=True)
+            st.plotly_chart(fig_hr, width="stretch")
 
         with col2:
             att_color = "orange" if sim_attention < 40 else "blue"
@@ -716,7 +716,7 @@ with tab_child:
                 gauge={'axis': {'range': [None, 100]}, 'bar': {'color': att_color}}
             ))
             fig_att.update_layout(height=170, margin=dict(l=10, r=10, t=50, b=10))
-            st.plotly_chart(fig_att, use_container_width=True)
+            st.plotly_chart(fig_att, width="stretch")
 
         with col3:
             # ── 正确提取地点名（"-" 后半段）+ 图标映射 ───────
@@ -794,9 +794,9 @@ with tab_child:
 
     col_btn1, col_btn2 = st.columns([1.5, 2.5])
     with col_btn1:
-        trigger_intervention = st.button("🔴 Trigger Intervention (触发主动介入)", use_container_width=True, type="primary", key="trigger_btn")
+        trigger_intervention = st.button("🔴 Trigger Intervention (触发主动介入)", width="stretch", type="primary", key="trigger_btn")
     with col_btn2:
-        if st.button("🔄 重置围栏状态（清空历史触发）", use_container_width=True, key="reset_fence_btn"):
+        if st.button("🔄 重置围栏状态（清空历史触发）", width="stretch", key="reset_fence_btn"):
             for _k in st.session_state.fence_status:
                 st.session_state.fence_status[_k] = "pending"
             st.session_state["_fence_just_reset"] = True
@@ -1128,7 +1128,7 @@ with tab_child:
 
 
 
-        if st.button("🔄 Fetch Live Schedule (获取实时班次)", use_container_width=True):
+        if st.button("🔄 Fetch Live Schedule (获取实时班次)", width="stretch"):
             try:
                 _url = f"https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php?line={sel_line}&sta={sel_sta}"
                 _resp = requests.get(_url, timeout=5)
@@ -1357,7 +1357,7 @@ with tab_parent:
                 yaxis2=dict(title="互动次数", overlaying="y", side="right"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02)
             )
-            st.plotly_chart(fig_trend, use_container_width=True)
+            st.plotly_chart(fig_trend, width="stretch")
         else:
             st.info("📊 请先在儿童界面触发对话后再查看趋势图。")
 
@@ -1393,7 +1393,7 @@ with tab_parent:
                 showlegend=True,
                 legend=dict(font=dict(size=10))
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
         else:
             st.info("暂无场景数据")
 
@@ -1417,7 +1417,7 @@ with tab_parent:
                 height=250, margin=dict(l=0, r=0, t=20, b=0),
                 xaxis_title="互动次数", yaxis_title=""
             )
-            st.plotly_chart(fig_loc, use_container_width=True)
+            st.plotly_chart(fig_loc, width="stretch")
         else:
             st.info("暂无地点数据")
 
@@ -1449,7 +1449,7 @@ with tab_parent:
                 height=250, margin=dict(l=0, r=0, t=20, b=0),
                 xaxis_title="❤️ Heart Rate / bpm (心率)", yaxis_title="🧠 Attention % (专注度)"
             )
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            st.plotly_chart(fig_scatter, width="stretch")
         else:
             st.info("暂无生理数据")
 
@@ -1470,7 +1470,7 @@ with tab_parent:
             {"A": f"A · {VARIANT_A}", "B": f"B · {VARIANT_B}"})
         ab_agg.columns = ["模型", "互动次数", "平均延迟(s)",
                           "平均Tokens", "警报触发数"]
-        st.dataframe(ab_agg, use_container_width=True, hide_index=True)
+        st.dataframe(ab_agg, width="stretch", hide_index=True)
         st.divider()
 
     # ── 安全围栏触发日志 ────────────────────────────────────────
@@ -1491,7 +1491,7 @@ with tab_parent:
         df_fence["timestamp"] = pd.to_datetime(df_fence["timestamp"]).dt.strftime("%m-%d %H:%M")
         show_cols = [c for c in ["timestamp","event_type","scenario",
                                  "action_taken","user_input_preview"] if c in df_fence.columns]
-        st.dataframe(df_fence[show_cols], use_container_width=True, hide_index=True)
+        st.dataframe(df_fence[show_cols], width="stretch", hide_index=True)
     else:
         st.success("🟢 本次会话暂无安全围栏触发记录")
 
@@ -1513,7 +1513,7 @@ with tab_parent:
         }
         alert_df = alert_df.rename(columns=col_rename)
         alert_df["时间"] = pd.to_datetime(alert_df["时间"]).dt.strftime("%m-%d %H:%M")
-        st.dataframe(alert_df, use_container_width=True, hide_index=True)
+        st.dataframe(alert_df, width="stretch", hide_index=True)
     else:
         st.info("暂无警报记录。请先在儿童界面触发几次对话。")
 
@@ -1525,7 +1525,7 @@ with tab_parent:
             data=csv_data,
             file_name=f"alice_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv",
-            use_container_width=True
+            width="stretch"
         )
 
     st.divider()
@@ -1729,9 +1729,9 @@ with tab_parent:
             data=report_csv,
             file_name=f"alice_teacher_report_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
             type="primary"
         )
     else:
         st.button("📄 导出完整评估报告给班主任 (需先触发对话)",
-                  type="primary", use_container_width=True, disabled=True)
+                  type="primary", width="stretch", disabled=True)
