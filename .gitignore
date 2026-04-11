@@ -1,19 +1,35 @@
+# 环境变量 & 密钥（绝对不能上传 GitHub）
 .env
 .env.local
+*.env
+secrets.toml
+
+# Python 缓存
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
 venv/
+env/
 .venv/
-.streamlit/secrets.toml
-*.log
-logs/
-session_logs/
-*.wav
-*.mp3
-temp_audio/
+
+# 日志文件（本地运行产生的，保留目录结构）
+logs/*.jsonl
+logs/*.log
+logs/*.jsonl.bak
+
+# macOS 系统文件
 .DS_Store
+.DS_Store?
+
+# IDE
 .vscode/
 .idea/
-dist/
-build/
-*.egg-info/
+*.swp
+
+# Streamlit 本地缓存
+.streamlit/secrets.tomllogs/*.json
+logs/*.json
