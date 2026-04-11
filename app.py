@@ -731,7 +731,8 @@ with tab_child:
                 "Park": "🌳", "Theme Park": "🎡",
             }
             _loc_icon = _loc_icon_map.get(_loc_display, "📍")
-            _loc_bg = "#fff3cd" if "MTR" in sim_location or "Restaurant" in sim_location else "#e8f4f8"
+            _HIGH_NOISE_LOCS = ["MTR", "Restaurant", "Mall", "Supermarket", "Bus", "Street", "Theme Park"]
+            _loc_bg = "#fff3cd" if any(h in sim_location for h in _HIGH_NOISE_LOCS) else "#e8f4f8"
             st.markdown(f"""<div style="background:{_loc_bg};border-radius:8px;padding:14px;height:130px;
               display:flex;flex-direction:column;justify-content:center;align-items:center;margin-top:18px;">
               <div style="font-size:1.0rem;color:#444;font-weight:700;letter-spacing:.02em;">📍 Location (定位)</div>
@@ -908,7 +909,7 @@ with tab_child:
                             "model_used": active_model_display,
                             "variant": st.session_state.active_variant,
                             "scenario": current_scenario,
-                            "location": sim_location.split(' ')[0],
+                            "location": sim_location,
                             "hr": sim_hr,
                             "hrv": sim_hrv,
                             "attention": sim_attention,
@@ -948,7 +949,7 @@ with tab_child:
                             "model_used": active_model_display,
                             "variant": st.session_state.active_variant,
                             "scenario": current_scenario,
-                            "location": sim_location.split(' ')[0],
+                            "location": sim_location,
                             "hr": sim_hr, "hrv": sim_hrv,
                             "attention": sim_attention, "noise": sim_noise,
                             "user_input": os_signal,
@@ -1033,7 +1034,7 @@ with tab_child:
                             "model_used": active_model_display,
                             "variant": st.session_state.active_variant,
                             "scenario": chat_scenario,
-                            "location": sim_location.split(' ')[0],
+                            "location": sim_location,
                             "hr": sim_hr,
                             "hrv": sim_hrv,
                             "attention": sim_attention,
@@ -1073,7 +1074,7 @@ with tab_child:
                             "model_used": active_model_display,
                             "variant": st.session_state.active_variant,
                             "scenario": chat_scenario,
-                            "location": sim_location.split(' ')[0],
+                            "location": sim_location,
                             "hr": sim_hr, "hrv": sim_hrv,
                             "attention": sim_attention, "noise": sim_noise,
                             "user_input": prompt,
@@ -1407,6 +1408,8 @@ with tab_parent:
         if not df_f.empty and "location" in df_f.columns:
             loc_counts = df_f["location"].value_counts().head(8).reset_index()
             loc_counts.columns = ["location", "count"]
+            loc_counts["location"] = loc_counts["location"].apply(
+                lambda x: x.split(" - ", 1)[1].strip() if " - " in str(x) else str(x))
             fig_loc = go.Figure(go.Bar(
                 x=loc_counts["count"],
                 y=loc_counts["location"],
@@ -1594,7 +1597,9 @@ with tab_parent:
         top_sc_zh       = scenario_map_zh.get(top_sc_label, top_sc_label)
         top_sc_count    = int(top_scenario.iloc[0]) if len(top_scenario) > 0 else 0
         high_noise_locs = df_f[df_f["noise"] > 75]["location"].value_counts() if "location" in df_f.columns else pd.Series(dtype=str)
-        top_noise_loc   = high_noise_locs.index[0].split("-")[0].strip() if len(high_noise_locs) > 0 else "未检测到"
+        _tnl_raw      = high_noise_locs.index[0] if len(high_noise_locs) > 0 else ""
+        _tnl_parts    = _tnl_raw.split(" - ", 1)
+        top_noise_loc = _tnl_parts[1].strip() if len(_tnl_parts) > 1 else (_tnl_raw or "未检测到")
         second_sc       = scenario_map_zh.get(top_scenario.index[1], top_scenario.index[1]) if len(top_scenario) > 1 else "—"
 
         card1_body = f"""
