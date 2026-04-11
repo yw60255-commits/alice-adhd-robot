@@ -20,9 +20,6 @@ from src.parent_notifier import parent_notifier, session_logger  # session_logge
 from src.safety_logger import safety_logger
 import re
 import requests
-# 老师指定：avatars.sustainer.ai 语音功能
-from io import BytesIO
-import base64
 
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
@@ -44,38 +41,6 @@ VARIANT_A = os.getenv("VARIANT_A_MODEL", "z-ai/glm-5-turbo")
 VARIANT_B = os.getenv("VARIANT_B_MODEL", "anthropic/claude-sonnet-4")
 ACTIVE_MODEL = VARIANT_A  # 默认跑 Variant A（便宜），演示时可切换到 VARIANT_B
 
-# ====================== 老师指定：Minimax TTS 语音（avatars.sustainer.ai）======================
-def play_teacher_voice(text):
-    try:
-        # 调用老师指定平台的语音接口
-        url = "https://avatars.sustainer.ai/api/tts"
-        data = {
-            "text": text,
-            "voice": "adhd_calm",  # ADHD温柔平静模式
-            "speed": 0.75  # 慢速，适合ADHD
-        }
-        response = requests.post(url, json=data)
-        audio_bytes = response.content
-        b64 = base64.b64encode(audio_bytes).decode()
-        
-        audio_html = f"""
-        <audio autoplay>
-        <source src="data:audio/wav;base64,{b64}" type="audio/wav">
-        
-        """
-        st.markdown(audio_html, unsafe_allow_html=True)
-    except:
-        st.info("使用老师指定语音：avatars.sustainer.ai")
-
-# ====================== 老师指定：GLM ASR 语音识别（听懂）======================
-def speech_to_text(audio_bytes):
-    try:
-        url = "https://avatars.sustainer.ai/api/asr"
-        files = {"audio": audio_bytes}
-        response = requests.post(url, files=files)
-        return response.json().get("text", "")
-    except:
-        return ""
 
 # --- 1. 页面基本设置 ---
 st.set_page_config(page_title="Alice ADHD Companion | 多模态主动伴侣", layout="wide")
@@ -810,16 +775,6 @@ with tab_child:
     # --- 5. 主动干预触发与交互 ---
     st.markdown("### 💬 Interactive Interface (交互界面)")
 
-# 🎤 老师指定：语音输入（avatars.sustainer.ai）
-st.markdown("#### 🎤 按住说话（老师指定语音系统）")
-audio_bytes = st.file_uploader("上传语音", type=["wav"], label_visibility="collapsed")
-prompt = ""
-
-if audio_bytes:
-    # 用老师平台转文字
-    prompt = speech_to_text(audio_bytes.read())
-    st.success(f"👂 老师平台识别：{prompt}")
-
     # ── 当前临床策略标签 ──────────────────────────────────────
     _strategy_labels = {
         "role_reversal":          "🎭 Role Reversal (角色反转)",
@@ -951,7 +906,6 @@ if audio_bytes:
                             """, unsafe_allow_html=True)
 
                         st.markdown(f"**🗣️ Alice:** \n\n {response_text}")
-                        play_teacher_voice(response_text)
 
                         if micro_task and micro_task.get('description'):
                             st.info(f"💡 微任务建议: {micro_task.get('description')} (难度: {micro_task.get('difficulty', 'easy')})")
@@ -1068,7 +1022,6 @@ if audio_bytes:
                         </div>
                         """, unsafe_allow_html=True)
                         st.markdown(spoken_text)
-                        play_teacher_voice(spoken_text)
 
                         # ✅ UI 消息列表（用于页面渲染）
                         st.session_state.messages.append({
