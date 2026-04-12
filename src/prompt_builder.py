@@ -174,7 +174,7 @@ class PromptBuilder:
 
 请严格按以下 JSON 格式输出，不要加任何 Markdown 代码块标记：
 {{
-  "response_text": "Alice 实际说出的话（只使用中文，语气生动自然，体现{strategy_key}策略）",
+  "response_text": "第一行：纯中文（粤语或普通话），可以包含数字和中文标点，不要有任何英文。空一行后，第二行：对应的英文翻译。例如：\\n我们一起来：吸气4秒，呼气6秒。就一次，试试看？\\n\\nLet's do it together: breathe in for 4 seconds, breathe out for 6 seconds. Just once, give it a try?",
   "emotion": "happy|concerned|encouraging|neutral",
   "action": "none|escalate|log|suggest_task",
   "micro_task": {{

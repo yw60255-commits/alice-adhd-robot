@@ -76,7 +76,7 @@ def speech_to_text(audio_bytes):
         return ""
     
 def play_teacher_voice(text):
-    """生成语音，并显示音频播放器（只朗读中文，移除所有英文、数字、表情符号）"""
+    """生成语音，并显示音频播放器（只朗读中文，保留数字，移除所有英文和表情符号）"""
     if not text:
         return
 
@@ -86,17 +86,15 @@ def play_teacher_voice(text):
     import base64
 
     def clean_text_for_tts(raw):
-        # 1. 移除数字
-        raw = re.sub(r'\d+', '', raw)
-        # 2. 移除所有英文字母（a-z, A-Z）
+        # 1. 移除所有英文字母（a-z, A-Z）
         raw = re.sub(r'[a-zA-Z]+', '', raw)
-        # 3. 移除表情符号，保留中文、常用标点、空格
-        raw = re.sub(r'[^\u4e00-\u9fff\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)
-        # 4. 去除多余空格
+        # 2. 移除表情符号，保留中文、数字、常用标点、空格
+        raw = re.sub(r'[^\u4e00-\u9fff0-9\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)
+        # 3. 去除多余空格
         cleaned = re.sub(r'\s+', ' ', raw).strip()
         return cleaned if cleaned else "（无法朗读的内容）"
 
-    clean_text = clean_text_for_tts(text)
+    clean_text = clean_text_for_tts(text)  # 直接清洗整个文本，不分割
 
     # 缓存音频（避免重复生成）
     text_hash = hash(clean_text)
@@ -125,9 +123,8 @@ def play_teacher_voice(text):
     if not audio_b64:
         return
 
-    # 显示音频播放器
     st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3", autoplay=False)
-
+    
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
 
