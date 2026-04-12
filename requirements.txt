@@ -7,8 +7,9 @@ requests>=2.31.0
 httpx>=0.24.0
 edge-tts
 transformers
-torch
-torchaudio
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.2
+torchaudio==2.1.2
 soundfile
 librosa
 numpy
