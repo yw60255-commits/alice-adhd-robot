@@ -20,7 +20,6 @@ from src.parent_notifier import parent_notifier, session_logger  # session_logge
 from src.safety_logger import safety_logger
 import re
 import requests
-# ── B 的语音函数：GLM ASR + Minimax TTS ──────────────────────
 import base64
 
 def speech_to_text(audio_bytes):
@@ -31,7 +30,7 @@ def speech_to_text(audio_bytes):
             files={"audio": ("audio.wav", audio_bytes, "audio/wav")}
         )
         return response.json().get("text", "")
-    except Exception as e:
+    except Exception:
         return ""
 
 def play_teacher_voice(text):
@@ -41,13 +40,12 @@ def play_teacher_voice(text):
             "https://avatars.sustainer.ai/api/tts",
             json={"text": text, "voice": "adhd-calm", "speed": 0.85}
         )
-        audio_bytes = response.content
-        b64 = base64.b64encode(audio_bytes).decode()
-        audio_html = f'<audio autoplay><source src="audio/wav;base64,{b64}" type="audio/wav"></audio>'
+        _tts_bytes = response.content
+        b64 = base64.b64encode(_tts_bytes).decode()
+        audio_html = f'<audio autoplay><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>'
         st.markdown(audio_html, unsafe_allow_html=True)
     except Exception:
-        pass  # 静默失败，不影响文字界面
-
+        pass
 
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
@@ -934,9 +932,7 @@ with tab_child:
                             """, unsafe_allow_html=True)
 
                         st.markdown(f"**🗣️ Alice:** \n\n {response_text}")
-
-                        play_teacher_voice(response_text)  # 🔊 Minimax TTS 朗读
-
+                        play_teacher_voice(response_text)  # 🔊 TTS 朗读
 
                         if micro_task and micro_task.get('description'):
                             st.info(f"💡 微任务建议: {micro_task.get('description')} (难度: {micro_task.get('difficulty', 'easy')})")
@@ -1001,8 +997,8 @@ with tab_child:
                 except Exception as e:
                     st.error(f"Error (出错): {e}")
 
-    # ── 🎤 语音输入区（B 提供：GLM ASR + Minimax TTS）────────────
-st.markdown("""
+    # ── 🎤 语音输入区（GLM ASR + Minimax TTS） - 仅儿童界面 ──────────────────
+    st.markdown("""
 <div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
      padding:10px 14px;margin-bottom:8px;">
   <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice（GLM ASR 识别 + Minimax TTS 朗读）</span>
@@ -1010,91 +1006,91 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-_audio_col1, _audio_col2 = st.columns([3, 1])
-with _audio_col1:
-    _audio_file = st.file_uploader(
-        "🎙️ 上传录音（WAV）", type=["wav"],
-        label_visibility="collapsed",
-        key="voice_uploader"
-    )
-with _audio_col2:
-    st.caption("WAV 格式\n录音后上传")
-
-if _audio_file is not None:
-    _audio_bytes = _audio_file.read()
-    with st.spinner("🎙️ Alice 正在聆听...（GLM ASR 识别中）"):
-        _voice_text = speech_to_text(_audio_bytes)
-
-    if _voice_text:
-        st.markdown(f"**🗣️ 你说：** `{_voice_text}`")
-        with st.chat_message("user"):
-            st.markdown(f"🎤 {_voice_text}")
-        st.session_state.messages.append({"role": "user", "content": f"🎤 {_voice_text}"})
-
-        _voice_system_prompt = PromptBuilder.build_scenario_prompt(
-            scenario_type=current_scenario,
-            sim_hr=sim_hr, sim_noise=sim_noise,
-            sim_inner_os=_voice_text, sim_attention=sim_attention,
-            sim_location=sim_location
+    _audio_col1, _audio_col2 = st.columns([3, 1])
+    with _audio_col1:
+        _audio_file = st.file_uploader(
+            "🎙️ 上传录音（WAV）", type=["wav"],
+            label_visibility="collapsed",
+            key="voice_uploader"
         )
-        with st.chat_message("assistant"):
-            _active_model_display = VARIANT_B if st.session_state.active_variant == "B" else VARIANT_A
-            with st.spinner(f"Alice 正在思考... [{_active_model_display}]"):
-                try:
-                    _vraw, _vtokens, _vlatency = get_ai_reply(
-                        user_input_text=_voice_text,
-                        system_prompt=_voice_system_prompt,
-                        api_history=st.session_state.api_messages,
-                        current_hr=sim_hr, current_noise=sim_noise,
-                        session_id=st.session_state.session_id
-                    )
-                    st.session_state.metrics["tokens"] += _vtokens
-                    st.session_state.metrics["calls"] += 1
-                    st.session_state.metrics["total_latency"] += _vlatency
+    with _audio_col2:
+        st.caption("WAV 格式\n录音后上传")
 
+    if _audio_file is not None:
+        _audio_bytes = _audio_file.read()
+        with st.spinner("🎙️ Alice 正在聆听...（GLM ASR 识别中）"):
+            _voice_text = speech_to_text(_audio_bytes)
+
+        if _voice_text:
+            st.markdown(f"**🗣️ 你说：** `{_voice_text}`")
+            with st.chat_message("user"):
+                st.markdown(f"🎤 {_voice_text}")
+            st.session_state.messages.append({"role": "user", "content": f"🎤 {_voice_text}"})
+
+            _voice_system_prompt = PromptBuilder.build_scenario_prompt(
+                scenario_type=current_scenario,
+                sim_hr=sim_hr, sim_noise=sim_noise,
+                sim_inner_os=_voice_text, sim_attention=sim_attention,
+                sim_location=sim_location
+            )
+            with st.chat_message("assistant"):
+                _active_model_display = VARIANT_B if st.session_state.active_variant == "B" else VARIANT_A
+                with st.spinner(f"Alice 正在思考... [{_active_model_display}]"):
                     try:
-                        _vclean = _vraw.replace("```json","").replace("```","").strip()
-                        _vdata  = json.loads(_vclean)
-                        _vspoken = _vdata.get("response_text", _vraw)
-                    except Exception:
-                        _vspoken = _vraw
+                        _vraw, _vtokens, _vlatency = get_ai_reply(
+                            user_input_text=_voice_text,
+                            system_prompt=_voice_system_prompt,
+                            api_history=st.session_state.api_messages,
+                            current_hr=sim_hr, current_noise=sim_noise,
+                            session_id=st.session_state.session_id
+                        )
+                        st.session_state.metrics["tokens"] += _vtokens
+                        st.session_state.metrics["calls"] += 1
+                        st.session_state.metrics["total_latency"] += _vlatency
 
-                    st.markdown(f"**🗣️ Alice:** {_vspoken}")
-                    play_teacher_voice(_vspoken)  # 🔊 Minimax TTS 朗读
+                        try:
+                            _vclean = _vraw.replace("```json","").replace("```","").strip()
+                            _vdata  = json.loads(_vclean)
+                            _vspoken = _vdata.get("response_text", _vraw)
+                        except Exception:
+                            _vspoken = _vraw
 
-                    st.session_state.messages.append({"role": "assistant", "content": _vspoken})
-                    st.session_state.api_messages.append({"role": "user", "content": _voice_text})
-                    st.session_state.api_messages.append({"role": "assistant", "content": _vspoken})
-                    if len(st.session_state.api_messages) > 20:
-                        st.session_state.api_messages = st.session_state.api_messages[-20:]
+                        st.markdown(f"**🗣️ Alice:** {_vspoken}")
+                        play_teacher_voice(_vspoken)
 
-                    _persist_log({
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "interaction_type": "Voice Input (GLM ASR)",
-                        "model_used": _active_model_display,
-                        "variant": st.session_state.active_variant,
-                        "scenario": current_scenario,
-                        "location": sim_location,
-                        "hr": sim_hr, "hrv": sim_hrv,
-                        "attention": sim_attention, "noise": sim_noise,
-                        "user_input": f"[VOICE] {_voice_text}",
-                        "clinical_reasoning": "",
-                        "assistant_response": _vspoken,
-                        "latency_sec": _vlatency, "tokens_used": _vtokens
-                    })
-                except Exception as _ve:
-                    st.error(f"语音回复出错: {_ve}")
-    else:
-        st.warning("⚠️ 语音识别失败，请重新上传 WAV 文件（确认 avatars.sustainer.ai 可访问）")
+                        st.session_state.messages.append({"role": "assistant", "content": _vspoken})
+                        st.session_state.api_messages.append({"role": "user", "content": _voice_text})
+                        st.session_state.api_messages.append({"role": "assistant", "content": _vspoken})
+                        if len(st.session_state.api_messages) > 20:
+                            st.session_state.api_messages = st.session_state.api_messages[-20:]
 
-st.markdown("---")
+                        _persist_log({
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "interaction_type": "Voice Input (GLM ASR)",
+                            "model_used": _active_model_display,
+                            "variant": st.session_state.active_variant,
+                            "scenario": current_scenario,
+                            "location": sim_location,
+                            "hr": sim_hr, "hrv": sim_hrv,
+                            "attention": sim_attention, "noise": sim_noise,
+                            "user_input": f"[VOICE] {_voice_text}",
+                            "clinical_reasoning": "",
+                            "assistant_response": _vspoken,
+                            "latency_sec": _vlatency, "tokens_used": _vtokens
+                        })
+                    except Exception as _ve:
+                        st.error(f"语音回复出错: {_ve}")
+        else:
+            st.warning("⚠️ 语音识别失败，请重新上传 WAV 文件")
 
-if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.markdown("---")
 
-    with st.chat_message("assistant"):
+        if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        with st.chat_message("assistant"):
             active_model_display = VARIANT_B if st.session_state.active_variant == "B" else VARIANT_A
             with st.spinner(f"Alice is thinking... [{active_model_display}]"):
                 try:
@@ -1866,3 +1862,14 @@ with tab_parent:
     else:
         st.button("📄 导出完整评估报告给班主任 (需先触发对话)",
                   type="primary", width="stretch", disabled=True)
+
+# ── 页底脚注 ──────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="text-align:center;padding:14px 0 8px 0;font-size:0.78rem;color:#aaa;
+     border-top:1px solid #eee;margin-top:28px;">
+  🔗 <a href="https://alice-adhd-robot.streamlit.app" target="_blank"
+       style="color:#888;text-decoration:none;">alice-adhd-robot.streamlit.app</a>
+  &nbsp;|&nbsp; GLM-5-Turbo (Variant A) &nbsp;/&nbsp; Claude Sonnet 4 (Variant B)
+  &nbsp;|&nbsp; OpenRouter API &nbsp;|&nbsp; DATA.GOV.HK &nbsp;|&nbsp; CityU CA5235 Project
+</div>
+""", unsafe_allow_html=True)
