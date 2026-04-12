@@ -1008,15 +1008,21 @@ with tab_child:
 </div>
 """, unsafe_allow_html=True)
 
-    _audio_col1, _audio_col2 = st.columns([3, 1])
-    with _audio_col1:
-        _audio_file = st.file_uploader(
-            "🎙️ 上传录音（WAV）", type=["wav"],
-            label_visibility="collapsed",
-            key="voice_uploader"
-        )
-    with _audio_col2:
-        st.caption("WAV 格式\n录音后上传")
+    # ── 🎤 语音输入区（浏览器原生录音 + GLM ASR + Minimax TTS） ──────────────
+    st.markdown("""
+<div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
+     padding:10px 14px;margin-bottom:8px;">
+  <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice（浏览器录音 + GLM ASR + Minimax TTS）</span>
+  <span style="font-size:0.82em;color:#666;"> · 按住录音按钮说话，松开自动回应</span>
+</div>
+""", unsafe_allow_html=True)
+
+    _audio_file = st.audio_input(
+        "🎙️ 按住说话，对 Alice 说你的问题...",
+        key="voice_recorder",
+        use_container_width=True,
+        help="🔴 按住录音 → 松开自动识别 → Alice 语音回复（支持中文）"
+    )
 
     if _audio_file is not None:
         _audio_bytes = _audio_file.read()
@@ -1083,7 +1089,7 @@ with tab_child:
                     except Exception as _ve:
                         st.error(f"语音回复出错: {_ve}")
         else:
-            st.warning("⚠️ 语音识别失败，请重新上传 WAV 文件")
+            st.warning("⚠️ 没听清，请再说一次？")
 
     if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
         with st.chat_message("user"):
