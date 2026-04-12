@@ -997,6 +997,8 @@ with tab_child:
                 except Exception as e:
                     st.error(f"Error (出错): {e}")
 
+    # ── 文字输入 ──
+    st.markdown("---")
     # ── 🎤 语音输入区（GLM ASR + Minimax TTS） - 仅儿童界面 ──────────────────
     st.markdown("""
 <div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
@@ -1083,8 +1085,6 @@ with tab_child:
         else:
             st.warning("⚠️ 语音识别失败，请重新上传 WAV 文件")
 
-    # ── 文字输入 ──
-    st.markdown("---")
     if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -1334,14 +1334,7 @@ with tab_child:
         with col_mtr1:
             st.caption("🔗 Live API (实时接口): `https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php?line={LINE}&sta={STATION}`")
 
-    # ── 页底最小字: 部署路线图 (不放在家长端内) ─────────────────────────
-    st.divider()
-    st.markdown("""<div style="font-size:0.78rem;color:#aaa;padding:4px 0 12px 0;line-height:1.7;">
-    🚀 <b>Deployment Roadmap</b><br>
-    &nbsp;&nbsp;• <b>Phase 1 (Now):</b> OpenRouter A/B Testing — GLM-5-Turbo vs Claude Sonnet 4<br>
-    &nbsp;&nbsp;• <b>Phase 2 (School Pilot):</b> On-premise Qwen-2.5 32B · PDPO compliant<br>
-    &nbsp;&nbsp;• <b>Phase 3 (Scale):</b> Clinical psychologist-governed safety rails<br>
-    </div>""", unsafe_allow_html=True)
+
 
 
 
@@ -1863,10 +1856,15 @@ with tab_parent:
         st.button("📄 导出完整评估报告给班主任 (需先触发对话)",
                   type="primary", width="stretch", disabled=True)
 
-# ── 页底脚注 ──────────────────────────────────────────────────────────────────
+# ── 页底脚注 + 部署路线图 ─────────────────────────────────────────────────────
 st.markdown("""
-<div style="text-align:center;padding:14px 0 8px 0;font-size:0.78rem;color:#aaa;
-     border-top:1px solid #eee;margin-top:28px;">
+<div style="text-align:center;padding:16px 0 10px 0;font-size:0.78rem;color:#aaa;
+     border-top:1px solid #eee;margin-top:28px;line-height:1.9;">
+  🚀 <b style="color:#888;">Deployment Roadmap</b> &nbsp;·&nbsp;
+  <b style="color:#888;">Phase 1 (Now):</b> OpenRouter A/B Testing — GLM-5-Turbo vs Claude Sonnet 4 &nbsp;|&nbsp;
+  <b style="color:#888;">Phase 2 (School Pilot):</b> On-premise Qwen-2.5 32B · PDPO compliant &nbsp;|&nbsp;
+  <b style="color:#888;">Phase 3 (Scale):</b> Clinical psychologist-governed safety rails
+  <br>
   🔗 <a href="https://alice-adhd-robot.streamlit.app" target="_blank"
        style="color:#888;text-decoration:none;">alice-adhd-robot.streamlit.app</a>
   &nbsp;|&nbsp; GLM-5-Turbo (Variant A) &nbsp;/&nbsp; Claude Sonnet 4 (Variant B)
