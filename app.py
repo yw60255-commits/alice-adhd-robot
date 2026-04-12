@@ -24,56 +24,98 @@ from src.safety_logger import safety_logger
 import re
 import requests
 
-# 在文件顶部（import 区域之后，函数定义之前）添加这两个全局变量
-_whisper_processor = None
-_whisper_model = None
+# ==================== 语音识别与合成模块（最终版） ====================
+import torch
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
+import librosa
+import soundfile as sf
+import tempfile
+import os
 
-def get_whisper_model():
-    """懒加载 Whisper 模型（tiny），只加载一次"""
-    global _whisper_processor, _whisper_model
-    if _whisper_processor is None:
-        import os
-        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        from transformers import WhisperProcessor, WhisperForConditionalGeneration
-        # 使用 tiny 模型（约 80MB），速度快，准确率可接受
-        _whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
-        _whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
-    return _whisper_processor, _whisper_model
+@st.cache_resource
+def load_whisper_model():
+    """加载 Whisper tiny 模型（只加载一次，全局缓存）"""
+    model_id = "openai/whisper-tiny"
+    # 可选：使用国内镜像加速下载
+    # os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+    processor = WhisperProcessor.from_pretrained(model_id)
+    model = WhisperForConditionalGeneration.from_pretrained(model_id)
+    model.eval()
+    return processor, model
 
 def speech_to_text(audio_bytes):
-    """使用缓存的 Whisper-tiny 模型进行本地语音识别（首次加载后快速识别）"""
+    """使用 Whisper tiny 将语音转为文字（适配云端部署）"""
     if not audio_bytes:
         return ""
 
     try:
-        import io
-        import soundfile as sf
-        import torch
+        # 1. 保存音频到临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmpfile:
+            tmpfile.write(audio_bytes)
+            tmp_path = tmpfile.name
 
-        # 读取音频
-        audio_data, samplerate = sf.read(io.BytesIO(audio_bytes))
+        # 2. 加载并重采样到 16kHz
+        audio, sr = librosa.load(tmp_path, sr=16000)
+        os.unlink(tmp_path)  # 删除临时文件
 
-        # 转换为 16kHz 单声道（Whisper 要求）
-        if samplerate != 16000:
-            import librosa
-            if audio_data.ndim == 2:
-                audio_data = audio_data.mean(axis=1)  # 立体声转单声道
-            audio_data = librosa.resample(audio_data, orig_sr=samplerate, target_sr=16000)
-            samplerate = 16000
-
-        # 获取缓存的模型（第一次调用时会加载）
-        processor, model = get_whisper_model()
-
-        # 处理音频
-        input_features = processor(audio_data, sampling_rate=samplerate, return_tensors="pt").input_features
+        # 3. 获取模型并识别
+        processor, model = load_whisper_model()
+        input_features = processor(audio, sampling_rate=16000, return_tensors="pt").input_features
         with torch.no_grad():
             predicted_ids = model.generate(input_features)
         transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
         return transcription
 
     except Exception as e:
-        print(f"语音识别出错: {e}")
+        print(f"语音识别错误: {e}")
         return ""
+
+def play_teacher_voice(text):
+    """生成语音并显示播放器（只朗读中文、数字、标点，移除英文和表情）"""
+    if not text:
+        return
+
+    import re
+    import asyncio
+    import edge_tts
+    import base64
+
+    def clean_text_for_tts(raw):
+        # 1. 移除所有英文字母
+        raw = re.sub(r'[a-zA-Z]+', '', raw)
+        # 2. 保留中文、数字、常用标点、空格，移除其他（包括表情符号）
+        raw = re.sub(r'[^\u4e00-\u9fff0-9\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)
+        # 3. 合并多余空格
+        cleaned = re.sub(r'\s+', ' ', raw).strip()
+        return cleaned if cleaned else "（无法朗读的内容）"
+
+    clean_text = clean_text_for_tts(text)
+
+    # 缓存音频（相同文本只生成一次）
+    text_hash = hash(clean_text)
+    cache_key = f"audio_{text_hash}"
+    if cache_key not in st.session_state:
+        async def _generate():
+            communicate = edge_tts.Communicate(clean_text, "zh-HK-HiuMaanNeural", rate="-15%")
+            audio_data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data += chunk["data"]
+            return base64.b64encode(audio_data).decode()
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            audio_b64 = loop.run_until_complete(_generate())
+            loop.close()
+            st.session_state[cache_key] = audio_b64
+        except Exception as e:
+            st.warning(f"语音生成失败: {e}")
+            return
+
+    audio_b64 = st.session_state[cache_key]
+    if audio_b64:
+        st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3", autoplay=False)
     
 def play_teacher_voice(text):
     """生成语音，并显示音频播放器（只朗读中文，保留数字，移除所有英文和表情符号）"""
