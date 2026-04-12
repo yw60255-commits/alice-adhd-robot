@@ -23,20 +23,18 @@ from src.parent_notifier import parent_notifier, session_logger
 from src.safety_logger import safety_logger
 import re
 import requests
-
-# ==================== 语音识别与合成模块（最终版） ====================
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 import librosa
 import soundfile as sf
 import tempfile
-import os
 
+# ==================== 语音识别模块（全局缓存） ====================
 @st.cache_resource
 def load_whisper_model():
     """加载 Whisper tiny 模型（只加载一次，全局缓存）"""
     model_id = "openai/whisper-tiny"
-    # 可选：使用国内镜像加速下载
+    # 可选镜像加速（国内用户可取消注释）
     # os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
     processor = WhisperProcessor.from_pretrained(model_id)
     model = WhisperForConditionalGeneration.from_pretrained(model_id)
@@ -75,17 +73,12 @@ def play_teacher_voice(text):
     if not text:
         return
 
-    import re
-    import asyncio
-    import edge_tts
-    import base64
-
     def clean_text_for_tts(raw):
-        # 1. 移除所有英文字母
+        # 移除所有英文字母
         raw = re.sub(r'[a-zA-Z]+', '', raw)
-        # 2. 保留中文、数字、常用标点、空格，移除其他（包括表情符号）
+        # 保留中文、数字、常用标点、空格，移除其他（包括表情符号）
         raw = re.sub(r'[^\u4e00-\u9fff0-9\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)
-        # 3. 合并多余空格
+        # 合并多余空格
         cleaned = re.sub(r'\s+', ' ', raw).strip()
         return cleaned if cleaned else "（无法朗读的内容）"
 
@@ -116,57 +109,7 @@ def play_teacher_voice(text):
     audio_b64 = st.session_state[cache_key]
     if audio_b64:
         st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3", autoplay=False)
-    
-def play_teacher_voice(text):
-    """生成语音，并显示音频播放器（只朗读中文，保留数字，移除所有英文和表情符号）"""
-    if not text:
-        return
 
-    import re
-    import asyncio
-    import edge_tts
-    import base64
-
-    def clean_text_for_tts(raw):
-        # 1. 移除所有英文字母（a-z, A-Z）
-        raw = re.sub(r'[a-zA-Z]+', '', raw)
-        # 2. 移除表情符号，保留中文、数字、常用标点、空格
-        raw = re.sub(r'[^\u4e00-\u9fff0-9\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)
-        # 3. 去除多余空格
-        cleaned = re.sub(r'\s+', ' ', raw).strip()
-        return cleaned if cleaned else "（无法朗读的内容）"
-
-    clean_text = clean_text_for_tts(text)  # 直接清洗整个文本，不分割
-
-    # 缓存音频（避免重复生成）
-    text_hash = hash(clean_text)
-    cache_key = f"audio_{text_hash}"
-
-    if cache_key not in st.session_state:
-        async def _generate():
-            communicate = edge_tts.Communicate(clean_text, "zh-HK-HiuMaanNeural", rate="-15%")
-            audio_data = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data += chunk["data"]
-            return base64.b64encode(audio_data).decode()
-
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            audio_b64 = loop.run_until_complete(_generate())
-            loop.close()
-            st.session_state[cache_key] = audio_b64
-        except Exception as e:
-            st.warning(f"语音生成失败: {e}")
-            return
-
-    audio_b64 = st.session_state[cache_key]
-    if not audio_b64:
-        return
-
-    st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3", autoplay=False)
-    
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
 
@@ -911,7 +854,7 @@ with tab_child:
 
     # ── 🎤 语音输入（云端兼容） ──
     st.markdown("### 🎤 语音版 Alice")
-    st.caption("Whisper 识别 + Edge TTS 朗读")   # 或使用 st.markdown 普通文本
+    st.caption("Whisper 识别 + Edge TTS 朗读")
 
     _audio_input = st.audio_input("🎙️ 按住说话", sample_rate=16000)
     with st.expander("📎 或上传录音文件", expanded=False):
@@ -973,7 +916,7 @@ with tab_child:
 
                         _persist_log({
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "interaction_type": "Voice Input (GLM ASR)",
+                            "interaction_type": "Voice Input (Whisper)",
                             "model_used": _active_model_display,
                             "variant": st.session_state.active_variant,
                             "scenario": current_scenario,
