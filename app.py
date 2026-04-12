@@ -24,41 +24,81 @@ from src.safety_logger import safety_logger
 import re
 import requests
 
+# 在文件顶部（import 区域之后，函数定义之前）添加这两个全局变量
+_whisper_processor = None
+_whisper_model = None
+
+def get_whisper_model():
+    """懒加载 Whisper 模型（tiny），只加载一次"""
+    global _whisper_processor, _whisper_model
+    if _whisper_processor is None:
+        import os
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+        # 使用 tiny 模型（约 80MB），速度快，准确率可接受
+        _whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+        _whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
+    return _whisper_processor, _whisper_model
+
 def speech_to_text(audio_bytes):
-    """GLM ASR：GET 请求，音频 base64 编码"""
-    try:
-        if hasattr(audio_bytes, 'read'):
-            audio_bytes = audio_bytes.read()
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        response = requests.get(
-            "https://avatars.sustainer.ai/api/asr",
-            params={"audio_base64": audio_b64},
-            timeout=10
-        )
-        if response.status_code == 200:
-            return response.json().get("text", "")
-        else:
-            st.error(f"ASR 错误: {response.status_code} - {response.text}")
-            return ""
-    except Exception as e:
-        st.error(f"语音识别异常: {e}")
+    """使用缓存的 Whisper-tiny 模型进行本地语音识别（首次加载后快速识别）"""
+    if not audio_bytes:
         return ""
 
+    try:
+        import io
+        import soundfile as sf
+        import torch
+
+        # 读取音频
+        audio_data, samplerate = sf.read(io.BytesIO(audio_bytes))
+
+        # 转换为 16kHz 单声道（Whisper 要求）
+        if samplerate != 16000:
+            import librosa
+            if audio_data.ndim == 2:
+                audio_data = audio_data.mean(axis=1)  # 立体声转单声道
+            audio_data = librosa.resample(audio_data, orig_sr=samplerate, target_sr=16000)
+            samplerate = 16000
+
+        # 获取缓存的模型（第一次调用时会加载）
+        processor, model = get_whisper_model()
+
+        # 处理音频
+        input_features = processor(audio_data, sampling_rate=samplerate, return_tensors="pt").input_features
+        with torch.no_grad():
+            predicted_ids = model.generate(input_features)
+        transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        return transcription
+
+    except Exception as e:
+        print(f"语音识别出错: {e}")
+        return ""
+    
 def play_teacher_voice(text):
-    """生成语音，并显示一个音频播放器（用户手动点击播放）"""
+    """生成语音，并显示音频播放器（只朗读中文，移除所有英文、数字、表情符号）"""
     if not text:
         return
 
-    # 清洗文本：移除英文、表情符号
+    import re
+    import asyncio
+    import edge_tts
+    import base64
+
     def clean_text_for_tts(raw):
-        raw = re.sub(r'[a-zA-Z]+', '', raw)                     # 去掉英文
-        raw = re.sub(r'[^\u4e00-\u9fff\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)  # 去掉表情符号和数字
-        raw = re.sub(r'\s+', ' ', raw).strip()
-        return raw if raw else "（无法朗读的内容）"
+        # 1. 移除数字
+        raw = re.sub(r'\d+', '', raw)
+        # 2. 移除所有英文字母（a-z, A-Z）
+        raw = re.sub(r'[a-zA-Z]+', '', raw)
+        # 3. 移除表情符号，保留中文、常用标点、空格
+        raw = re.sub(r'[^\u4e00-\u9fff\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)
+        # 4. 去除多余空格
+        cleaned = re.sub(r'\s+', ' ', raw).strip()
+        return cleaned if cleaned else "（无法朗读的内容）"
 
     clean_text = clean_text_for_tts(text)
 
-    # 异步生成语音并缓存
+    # 缓存音频（避免重复生成）
     text_hash = hash(clean_text)
     cache_key = f"audio_{text_hash}"
 
@@ -85,7 +125,7 @@ def play_teacher_voice(text):
     if not audio_b64:
         return
 
-    # 显示音频播放器（用户手动点击播放）
+    # 显示音频播放器
     st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3", autoplay=False)
 
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
@@ -831,13 +871,8 @@ with tab_child:
     st.markdown("---")
 
     # ── 🎤 语音输入（云端兼容） ──
-    st.markdown("""
-    <div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
-        padding:10px 14px;margin-bottom:8px;">
-    <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice</span>
-    <span style="font-size:0.82em;color:#666;">GLM ASR 识别 + Edge TTS 朗读</span>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("### 🎤 语音版 Alice")
+    st.caption("Whisper 识别 + Edge TTS 朗读")   # 或使用 st.markdown 普通文本
 
     _audio_input = st.audio_input("🎙️ 按住说话", sample_rate=16000)
     with st.expander("📎 或上传录音文件", expanded=False):
