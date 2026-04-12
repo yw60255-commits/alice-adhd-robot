@@ -6,10 +6,9 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 httpx>=0.24.0
 edge-tts
-transformers>=4.35.0
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.1.2
-torchaudio==2.1.2
-soundfile>=0.12.1
-librosa>=0.10.0
-numpy>=1.24.0
+transformers
+torch
+torchaudio
+soundfile
+librosa
+numpy
