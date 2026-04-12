@@ -7,9 +7,6 @@ import plotly.graph_objects as go
 import time
 import json
 import pandas as pd
-import asyncio
-import edge_tts
-import base64
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -26,68 +23,29 @@ import requests
 import base64
 
 def speech_to_text(audio_bytes):
-    """GLM ASR：GET 请求，音频 base64 编码"""
+    """GLM ASR：语音 → 文字（avatars.sustainer.ai）"""
     try:
-        # 读取音频并转为 base64
-        if hasattr(audio_bytes, 'read'):
-            audio_bytes = audio_bytes.read()
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        
-        response = requests.get(
+        response = requests.post(
             "https://avatars.sustainer.ai/api/asr",
-            params={"audio_base64": audio_b64},  # 参数名可能需要调整
-            timeout=10
+            files={"audio": ("audio.wav", audio_bytes, "audio/wav")}
         )
-        if response.status_code == 200:
-            return response.json().get("text", "")
-        else:
-            st.error(f"ASR 错误: {response.status_code} - {response.text}")
-            return ""
-    except Exception as e:
-        st.error(f"语音识别异常: {e}")
+        return response.json().get("text", "")
+    except Exception:
         return ""
 
 def play_teacher_voice(text):
-    """使用 Edge TTS 生成并播放语音"""
-    if not text:
-        return
-
-    # 定义一个异步函数，用于生成语音并返回base64编码的音频
-    async def _generate_speech():
-        try:
-            # 创建一个通信对象，指定文本和中文女声音色
-            # 你可以把 'zh-CN-XiaoxiaoNeural' 换成其他喜欢的音色
-            communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-            
-            # 创建一个空的字节对象来存放所有音频数据
-            audio_data = b""
-            # 异步地接收语音数据块
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data += chunk["data"]
-            
-            # 将完整的音频数据编码为 base64 格式，方便网页播放
-            return base64.b64encode(audio_data).decode()
-        except Exception as e:
-            print(f"Edge TTS 生成失败: {e}")
-            return None
-
+    """Minimax TTS：文字 → 语音（avatars.sustainer.ai）"""
     try:
-        # 获取当前的事件循环
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # 执行异步函数，等待音频生成完成
-        audio_base64 = loop.run_until_complete(_generate_speech())
-        loop.close()
-
-        # 如果成功获取到音频，就在网页上创建一个自动播放的音频标签
-        if audio_base64:
-            audio_html = f'<audio autoplay src="data:audio/mp3;base64,{audio_base64}"></audio>'
-            st.markdown(audio_html, unsafe_allow_html=True)
-        else:
-            st.warning("语音生成失败，请稍后重试。")
-    except Exception as e:
-        st.error(f"语音播放时出错: {e}")
+        response = requests.post(
+            "https://avatars.sustainer.ai/api/tts",
+            json={"text": text, "voice": "adhd-calm", "speed": 0.85}
+        )
+        _tts_bytes = response.content
+        b64 = base64.b64encode(_tts_bytes).decode()
+        audio_html = f'<audio autoplay><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>'
+        st.markdown(audio_html, unsafe_allow_html=True)
+    except Exception:
+        pass
 
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
@@ -281,17 +239,8 @@ if "messages" not in st.session_state:
 if "api_messages" not in st.session_state:
     st.session_state.api_messages = []
 
-if "calls" not in st.session_state:
-    st.session_state.calls = 0
-
 if "metrics" not in st.session_state:
     st.session_state.metrics = {"tokens": 0, "calls": 0, "total_latency": 0.0}
-
-if "tts_enabled" not in st.session_state:
-    st.session_state.tts_enabled = True
-
-if "auto_play_tts" not in st.session_state:
-    st.session_state.auto_play_tts = True
 
 if "logs" not in st.session_state:
     # 启动时从持久化文件加载历史日志
@@ -649,14 +598,6 @@ with st.sidebar:
         else:
             st.warning("🟡 Claude Sonnet 4：宪法AI安全架构，英文推理更强")
 
-    # TTS 语音输出开关
-    st.divider()
-    with st.expander("🔊 语音输出设置", expanded=True):
-        st.session_state.tts_enabled = st.toggle("启用语音朗读", value=True)
-        st.session_state.auto_play_tts = st.toggle("自动播放回复", value=st.session_state.tts_enabled, disabled=not st.session_state.tts_enabled)
-        if not st.session_state.tts_enabled:
-            st.caption("语音朗读已禁用")
-
     st.divider()
 
     with st.expander("🎛️ Sensor Console (传感器控制台)", expanded=True):
@@ -991,18 +932,7 @@ with tab_child:
                             """, unsafe_allow_html=True)
 
                         st.markdown(f"**🗣️ Alice:** \n\n {response_text}")
-                        
-                        # 朗读按钮 + 自动播放
-                        col_tts1, col_tts2 = st.columns([1, 4])
-                        with col_tts1:
-                            if st.session_state.tts_enabled:
-                                if st.button("🔊 朗读", key=f"tts_{st.session_state.calls}", use_container_width=True):
-                                    play_teacher_voice(response_text)
-                            else:
-                                st.caption("语音已禁用")
-                        with col_tts2:
-                            if st.session_state.tts_enabled and st.session_state.auto_play_tts:
-                                play_teacher_voice(response_text)
+                        play_teacher_voice(response_text)  # 🔊 TTS 朗读
 
                         if micro_task and micro_task.get('description'):
                             st.info(f"💡 微任务建议: {micro_task.get('description')} (难度: {micro_task.get('difficulty', 'easy')})")
@@ -1069,36 +999,42 @@ with tab_child:
 
     # ── 文字输入 ──
     st.markdown("---")
-
-    # ── 🎤 语音输入（云端兼容） ──
+    # ── 🎤 语音输入区（GLM ASR + Minimax TTS） - 仅儿童界面 ──────────────────
     st.markdown("""
-    <div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
-        padding:10px 14px;margin-bottom:8px;">
-    <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice</span>
-    <span style="font-size:0.82em;color:#666;">GLM ASR 识别 + Minimax TTS 朗读</span>
-    </div>
-    """, unsafe_allow_html=True)
+<div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
+     padding:10px 14px;margin-bottom:8px;">
+  <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice（GLM ASR 识别 + Minimax TTS 朗读）</span>
+  <span style="font-size:0.82em;color:#666;"> · 上传 WAV 录音，Alice 自动识别并语音回应</span>
+</div>
+""", unsafe_allow_html=True)
 
-    # 语音输入：麦克风（Streamlit 1.51+ 原生支持）
-    _audio_input = st.audio_input("🎙️ 按住说话", sample_rate=16000)
-    
-    # 备用：文件上传（兼容旧环境）
-    with st.expander("📎 或上传录音文件", expanded=False):
-        _audio_file = st.file_uploader("🎙️ 上传录音（WAV）", type=["wav"])
+    _audio_col1, _audio_col2 = st.columns([3, 1])
+    with _audio_col1:
+        _audio_file = st.markdown("""
+<div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
+     padding:10px 14px;margin-bottom:8px;">
+  <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice（浏览器录音 + GLM ASR + Minimax TTS）</span>
+  <span style="font-size:0.82em;color:#666;"> · 按住录音按钮说话，松开自动回应</span>
+</div>
+""", unsafe_allow_html=True)
 
-    # 处理任一输入
-    _audio_bytes = None
-    if _audio_input is not None:
-        _audio_bytes = _audio_input.read()
-    elif _audio_file is not None:
+_audio_file = st.audio_input(
+    "🎙️ 按住说话，对 Alice 说...",
+    key="voice_recorder",
+    use_container_width=True,
+    help="按住录音按钮说话，松开自动发送给 Alice（支持中文）"
+)（WAV）", type=["wav"],
+            label_visibility="collapsed",
+            key="voice_uploader"
+        )
+    with _audio_col2:
+        st.caption("WAV 格式\n录音后上传")
+
+    if _audio_file is not None:
         _audio_bytes = _audio_file.read()
-
-    if _audio_bytes is not None:
-        with st.spinner("🎙️ Alice 正在聆听..."):
+        with st.spinner("🎙️ Alice 正在聆听...（GLM ASR 识别中）"):
             _voice_text = speech_to_text(_audio_bytes)
-            if not _voice_text:
-                _voice_text = "（未能识别语音，请重试或使用文字输入）"
-            # 原有逻辑继续...
+
         if _voice_text:
             st.markdown(f"**🗣️ 你说：** `{_voice_text}`")
             with st.chat_message("user"):
@@ -1134,18 +1070,7 @@ with tab_child:
                             _vspoken = _vraw
 
                         st.markdown(f"**🗣️ Alice:** {_vspoken}")
-                        
-                        # 朗读按钮 + 自动播放
-                        col_vtts1, col_vtts2 = st.columns([1, 4])
-                        with col_vtts1:
-                            if st.session_state.tts_enabled:
-                                if st.button("🔊 朗读", key=f"vtts_{st.session_state.calls}", use_container_width=True):
-                                    play_teacher_voice(_vspoken)
-                            else:
-                                st.caption("语音已禁用")
-                        with col_vtts2:
-                            if st.session_state.tts_enabled and st.session_state.auto_play_tts:
-                                play_teacher_voice(_vspoken)
+                        play_teacher_voice(_vspoken)
 
                         st.session_state.messages.append({"role": "assistant", "content": _vspoken})
                         st.session_state.api_messages.append({"role": "user", "content": _voice_text})
@@ -1170,7 +1095,7 @@ with tab_child:
                     except Exception as _ve:
                         st.error(f"语音回复出错: {_ve}")
         else:
-            st.warning("⚠️ 没听清，请再说一次？")
+            st.warning("⚠️ 语音识别失败，请重新上传 WAV 文件")
 
     if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
         with st.chat_message("user"):

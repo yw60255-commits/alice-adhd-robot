@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
@@ -7,6 +8,9 @@ import time as time_module
 import json
 import requests
 from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from backend.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, DEFAULT_MODEL, LMSTUDIO_BASE_URL
 from backend.models.schemas import (

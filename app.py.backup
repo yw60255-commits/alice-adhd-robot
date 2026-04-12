@@ -7,9 +7,6 @@ import plotly.graph_objects as go
 import time
 import json
 import pandas as pd
-import asyncio
-import edge_tts
-import base64
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -26,68 +23,184 @@ import requests
 import base64
 
 def speech_to_text(audio_bytes):
-    """GLM ASR：GET 请求，音频 base64 编码"""
+    """使用 OpenAI GPT-Audio-Mini 进行语音识别"""
+    import sys
+    import base64
+    import os
+    import io
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    if audio_bytes is None:
+        return ""
+    
     try:
-        # 读取音频并转为 base64
+        # 检查并读取音频
         if hasattr(audio_bytes, 'read'):
             audio_bytes = audio_bytes.read()
+        
+        if not audio_bytes or len(audio_bytes) < 1000:
+            return "音频太短，请重试"
+        
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            return "未配置 API Key"
+        
+        # base64 编码
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         
-        response = requests.get(
-            "https://avatars.sustainer.ai/api/asr",
-            params={"audio_base64": audio_b64},  # 参数名可能需要调整
-            timeout=10
+        # 使用 GPT-Audio-Mini 模型 (支持音频输入)
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://adhd-robot.streamlit.app",
+                "X-Title": "Alice ADHD Robot"
+            },
+            json={
+                "model": "openai/gpt-audio-mini",
+                "modalities": ["text"],
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio", 
+                            "input_audio": {
+                                "data": audio_b64,
+                                "format": "wav"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": "请将这段音频中的语音内容转写成文字，只需要输出转写的文字，不要有其他内容。"
+                        }
+                    ]
+                }]
+            },
+            timeout=45
         )
+        
         if response.status_code == 200:
-            return response.json().get("text", "")
+            result = response.json()
+            text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            text = text.strip() if text else ""
+            if text:
+                return text
+            return "未能识别，请重试或使用文字输入"
+        elif response.status_code == 403:
+            print(f"403 错误: {response.text[:200]}", file=sys.stderr)
+            return "该功能在您所在的地区不可用，请使用文字输入"
         else:
-            st.error(f"ASR 错误: {response.status_code} - {response.text}")
+            print(f"API 错误: {response.status_code} - {response.text[:200]}", file=sys.stderr)
+            return ""
+            
+    except Exception as e:
+        print(f"语音识别异常: {e}", file=sys.stderr)
+        return ""
+    
+    try:
+        # 检查音频类型和大小
+        print(f"DEBUG: 音频类型 = {type(audio_bytes)}", file=sys.stderr)
+        print(f"DEBUG: 音频大小 = {len(audio_bytes) if hasattr(audio_bytes, '__len__') else 'N/A'} bytes", file=sys.stderr)
+        
+        # 尝试读取
+        if hasattr(audio_bytes, 'read'):
+            print("DEBUG: 检测到 file-like 对象，尝试读取", file=sys.stderr)
+            audio_bytes = audio_bytes.read()
+            print(f"DEBUG: 读取后大小 = {len(audio_bytes)} bytes", file=sys.stderr)
+        
+        # 检查前20字节
+        if audio_bytes and len(audio_bytes) > 0:
+            first_20 = audio_bytes[:20]
+            print(f"DEBUG: 前20字节(hex) = {first_20.hex()}", file=sys.stderr)
+            print(f"DEBUG: 前20字节(str) = {first_20}", file=sys.stderr)
+        
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            print("DEBUG: API Key 为空", file=sys.stderr)
+            print("=== 语音识别调试 END ===", file=sys.stderr)
+            print("=" * 50, file=sys.stderr)
+            return ""
+        
+        print("DEBUG: 开始 base64 编码", file=sys.stderr)
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+        print(f"DEBUG: base64 长度 = {len(audio_b64)}", file=sys.stderr)
+        
+        print("DEBUG: 发送请求到 OpenRouter", file=sys.stderr)
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "mistralai/voxtral-small-24b-2507",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "You are a speech recognition model. Transcribe the_audio to text exactly as spoken in Chinese. If unclear, write '未能识别'."},
+                        {"type": "input_audio", "inputAudio": {"data": audio_b64, "format": "wav"}}
+                    ]
+                }]
+            },
+            timeout=30
+        )
+        
+        print(f"DEBUG: 响应状态码 = {response.status_code}", file=sys.stderr)
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"DEBUG: 响应内容 = {result}", file=sys.stderr)
+            text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            print(f"DEBUG: 识别结果 = {text}", file=sys.stderr)
+            print("=== 语音识别调试 END ===", file=sys.stderr)
+            print("=" * 50, file=sys.stderr)
+            return text
+        else:
+            print(f"DEBUG: 错误响应 = {response.text}", file=sys.stderr)
+            print("=== 语音识别调试 END ===", file=sys.stderr)
+            print("=" * 50, file=sys.stderr)
             return ""
     except Exception as e:
-        st.error(f"语音识别异常: {e}")
+        import traceback
+        print(f"DEBUG: 语音识别异常 = {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("=== 语音识别调试 END ===", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
         return ""
 
 def play_teacher_voice(text):
-    """使用 Edge TTS 生成并播放语音"""
+    """简化的语音输出：显示文字 + 复制按钮"""
     if not text:
         return
-
-    # 定义一个异步函数，用于生成语音并返回base64编码的音频
-    async def _generate_speech():
-        try:
-            # 创建一个通信对象，指定文本和中文女声音色
-            # 你可以把 'zh-CN-XiaoxiaoNeural' 换成其他喜欢的音色
-            communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-            
-            # 创建一个空的字节对象来存放所有音频数据
-            audio_data = b""
-            # 异步地接收语音数据块
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data += chunk["data"]
-            
-            # 将完整的音频数据编码为 base64 格式，方便网页播放
-            return base64.b64encode(audio_data).decode()
-        except Exception as e:
-            print(f"Edge TTS 生成失败: {e}")
-            return None
-
+    
+    import re
+    
     try:
-        # 获取当前的事件循环
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # 执行异步函数，等待音频生成完成
-        audio_base64 = loop.run_until_complete(_generate_speech())
-        loop.close()
-
-        # 如果成功获取到音频，就在网页上创建一个自动播放的音频标签
-        if audio_base64:
-            audio_html = f'<audio autoplay src="data:audio/mp3;base64,{audio_base64}"></audio>'
-            st.markdown(audio_html, unsafe_allow_html=True)
-        else:
-            st.warning("语音生成失败，请稍后重试。")
-    except Exception as e:
-        st.error(f"语音播放时出错: {e}")
+        text = text.strip()
+        if text.startswith("{") or text.startswith("["):
+            match = re.search(r'"response_text":\s*"([^"]*)"', text)
+            if match:
+                text = match.group(1)
+    except:
+        pass
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.info(f"📢 Alice: {text}")
+    
+    with col2:
+        # 复制按钮
+        text_escaped = text.replace("'", "\\'").replace('"', '\\"')
+        if st.button("📋 复制", key=f"copy_{hash(text)}", use_container_width=True):
+            st.markdown(f"""
+            <script>
+            navigator.clipboard.writeText("{text_escaped}");
+            </script>
+            """, unsafe_allow_html=True)
+            st.toast("已复制到剪贴板！", icon="📋")
 
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
