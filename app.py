@@ -999,36 +999,24 @@ with tab_child:
 
     # ── 文字输入 ──
     st.markdown("---")
-    # ── 🎤 语音输入区（GLM ASR + Minimax TTS） - 仅儿童界面 ──────────────────
-    st.markdown("""
-<div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
-     padding:10px 14px;margin-bottom:8px;">
-  <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice（GLM ASR 识别 + Minimax TTS 朗读）</span>
-  <span style="font-size:0.82em;color:#666;"> · 上传 WAV 录音，Alice 自动识别并语音回应</span>
-</div>
-""", unsafe_allow_html=True)
 
-    # ── 🎤 语音输入区（浏览器原生录音 + GLM ASR + Minimax TTS） ──────────────
+    # ── 🎤 语音输入（云端兼容） ──
     st.markdown("""
-<div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
-     padding:10px 14px;margin-bottom:8px;">
-  <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice（浏览器录音 + GLM ASR + Minimax TTS）</span>
-  <span style="font-size:0.82em;color:#666;"> · 按住录音按钮说话，松开自动回应</span>
-</div>
-""", unsafe_allow_html=True)
+    <div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
+        padding:10px 14px;margin-bottom:8px;">
+    <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice</span>
+    <span style="font-size:0.82em;color:#666;">GLM ASR 识别 + Minimax TTS 朗读</span>
+    </div>
+    """, unsafe_allow_html=True)
 
-    _audio_file = st.audio_input(
-        "🎙️ 按住说话，对 Alice 说你的问题...",
-        key="voice_recorder",
-        use_container_width=True,
-        help="🔴 按住录音 → 松开自动识别 → Alice 语音回复（支持中文）"
-    )
+    # 云端兼容：文件上传（Streamlit Cloud不支持麦克风）
+    _audio_file = st.file_uploader("🎙️ 上传录音（WAV）", type=["wav"])
 
     if _audio_file is not None:
         _audio_bytes = _audio_file.read()
-        with st.spinner("🎙️ Alice 正在聆听...（GLM ASR 识别中）"):
+        with st.spinner("🎙️ Alice 正在聆听..."):
             _voice_text = speech_to_text(_audio_bytes)
-
+            # 原有逻辑继续...
         if _voice_text:
             st.markdown(f"**🗣️ 你说：** `{_voice_text}`")
             with st.chat_message("user"):
