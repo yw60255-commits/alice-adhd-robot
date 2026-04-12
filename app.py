@@ -253,7 +253,7 @@ if "logs" not in st.session_state:
                 for _line in _f:
                     _line = _line.strip()
                     if _line:
-                        _loaded_logs.append(_json_init.loads(_line))
+                        _loaded_logs.append(json.loads(_line))
         except Exception:
             pass
     st.session_state.logs = _loaded_logs
@@ -1083,9 +1083,9 @@ with tab_child:
         else:
             st.warning("⚠️ 语音识别失败，请重新上传 WAV 文件")
 
+    # ── 文字输入 ──
     st.markdown("---")
-
-        if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
+    if prompt := st.chat_input("Reply to Alice... (回复 Alice...)", key="user_chat_input"):
         with st.chat_message("user"):
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
