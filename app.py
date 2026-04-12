@@ -18,24 +18,21 @@ from src.prompt_builder import PromptBuilder
 from src.api_client import APIClient
 from src.config import API_BASE_URL, USE_BACKEND_API
 from src.safety_filter import input_filter, output_filter
-from src.crisis_handler import crisis_handler, CrisisLevel  # CrisisLevel 保留供扩展
-from src.parent_notifier import parent_notifier, session_logger  # session_logger 保留供扩展
+from src.crisis_handler import crisis_handler, CrisisLevel
+from src.parent_notifier import parent_notifier, session_logger
 from src.safety_logger import safety_logger
 import re
 import requests
-import base64
 
 def speech_to_text(audio_bytes):
     """GLM ASR：GET 请求，音频 base64 编码"""
     try:
-        # 读取音频并转为 base64
         if hasattr(audio_bytes, 'read'):
             audio_bytes = audio_bytes.read()
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        
         response = requests.get(
             "https://avatars.sustainer.ai/api/asr",
-            params={"audio_base64": audio_b64},  # 参数名可能需要调整
+            params={"audio_base64": audio_b64},
             timeout=10
         )
         if response.status_code == 200:
@@ -48,46 +45,48 @@ def speech_to_text(audio_bytes):
         return ""
 
 def play_teacher_voice(text):
-    """使用 Edge TTS 生成并播放语音"""
+    """生成语音，并显示一个音频播放器（用户手动点击播放）"""
     if not text:
         return
 
-    # 定义一个异步函数，用于生成语音并返回base64编码的音频
-    async def _generate_speech():
-        try:
-            # 创建一个通信对象，指定文本和中文女声音色
-            # 你可以把 'zh-CN-XiaoxiaoNeural' 换成其他喜欢的音色
-            communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-            
-            # 创建一个空的字节对象来存放所有音频数据
+    # 清洗文本：移除英文、表情符号
+    def clean_text_for_tts(raw):
+        raw = re.sub(r'[a-zA-Z]+', '', raw)                     # 去掉英文
+        raw = re.sub(r'[^\u4e00-\u9fff\s\.\,\!\?\;\:\"\'\u3002\uff1f\uff01\uff0c\u3001\uff1b\uff1a\u201c\u201d\u300a\u300b]', '', raw)  # 去掉表情符号和数字
+        raw = re.sub(r'\s+', ' ', raw).strip()
+        return raw if raw else "（无法朗读的内容）"
+
+    clean_text = clean_text_for_tts(text)
+
+    # 异步生成语音并缓存
+    text_hash = hash(clean_text)
+    cache_key = f"audio_{text_hash}"
+
+    if cache_key not in st.session_state:
+        async def _generate():
+            communicate = edge_tts.Communicate(clean_text, "zh-HK-HiuMaanNeural", rate="-15%")
             audio_data = b""
-            # 异步地接收语音数据块
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_data += chunk["data"]
-            
-            # 将完整的音频数据编码为 base64 格式，方便网页播放
             return base64.b64encode(audio_data).decode()
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            audio_b64 = loop.run_until_complete(_generate())
+            loop.close()
+            st.session_state[cache_key] = audio_b64
         except Exception as e:
-            print(f"Edge TTS 生成失败: {e}")
-            return None
+            st.warning(f"语音生成失败: {e}")
+            return
 
-    try:
-        # 获取当前的事件循环
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # 执行异步函数，等待音频生成完成
-        audio_base64 = loop.run_until_complete(_generate_speech())
-        loop.close()
+    audio_b64 = st.session_state[cache_key]
+    if not audio_b64:
+        return
 
-        # 如果成功获取到音频，就在网页上创建一个自动播放的音频标签
-        if audio_base64:
-            audio_html = f'<audio autoplay src="data:audio/mp3;base64,{audio_base64}"></audio>'
-            st.markdown(audio_html, unsafe_allow_html=True)
-        else:
-            st.warning("语音生成失败，请稍后重试。")
-    except Exception as e:
-        st.error(f"语音播放时出错: {e}")
+    # 显示音频播放器（用户手动点击播放）
+    st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3", autoplay=False)
 
 # ── 读取 API Key（本地用 .env，线上用 Streamlit Secrets）──────
 load_dotenv()
@@ -107,13 +106,12 @@ client = OpenAI(
 # ── 模型配置（从环境变量读取，不再硬编码）────────────────────
 VARIANT_A = os.getenv("VARIANT_A_MODEL", "z-ai/glm-5-turbo")
 VARIANT_B = os.getenv("VARIANT_B_MODEL", "anthropic/claude-sonnet-4")
-ACTIVE_MODEL = VARIANT_A  # 默认跑 Variant A（便宜），演示时可切换到 VARIANT_B
-
+ACTIVE_MODEL = VARIANT_A
 
 # --- 1. 页面基本设置 ---
 st.set_page_config(page_title="Alice ADHD Companion | 多模态主动伴侣", layout="wide")
 
-# ── 全站字号统一 (4 级字号系统: 大标题/小标题/正文/脚注) ──────────────
+# ── 全站字号统一 (4 级字号系统) ──────────────────────────────
 st.markdown("""
 <style>
 /* T1 大标题 */
@@ -149,106 +147,31 @@ st.markdown("""
 # ── 移动端适配 CSS ────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ══════════════════════════════════════════════════════
-   移动端适配 (≤768px)
-   Streamlit 在手机上：侧栏自动折叠，主区全宽
-   ══════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-
-  /* 1. 主容器内边距压缩 */
-  .block-container {
-    padding: 0.5rem 0.75rem 2rem 0.75rem !important;
-    max-width: 100% !important;
-  }
-
-  /* 2. 标题字号缩小 */
+  .block-container { padding: 0.5rem 0.75rem 2rem 0.75rem !important; max-width: 100% !important; }
   h1, .stMarkdown h1 { font-size: 1.5rem !important; }
   h2, .stMarkdown h2 { font-size: 1.2rem !important; }
   h3, .stMarkdown h3 { font-size: 1.05rem !important; }
   h4, .stMarkdown h4 { font-size: 0.95rem !important; }
   p, li, .stMarkdown p { font-size: 0.88rem !important; }
-
-  /* 3. st.columns → 强制单列堆叠（Streamlit 原生在手机已换行，
-        此处额外缩小 gap，让卡片间距合适） */
-  [data-testid="column"] {
-    width: 100% !important;
-    min-width: 100% !important;
-    padding: 0 !important;
-  }
-
-  /* 4. 按钮全宽、加高触摸区域 */
-  .stButton button {
-    width: 100% !important;
-    min-height: 48px !important;
-    font-size: 0.9rem !important;
-  }
-
-  /* 5. 表格/dataframe 允许横向滚动 */
-  [data-testid="stDataFrame"] {
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  /* 6. Plotly 图表不溢出 */
-  .js-plotly-plot, .plotly {
-    max-width: 100% !important;
-  }
-
-  /* 7. Safety Fence 7列 → 手机上显示为 2 行（每行约3-4个）*/
-  /* Streamlit columns 在手机上已自动换行，此处确保小卡片最小宽度 */
-  [data-testid="column"] > div > div > div[style*="border-radius:10px"] {
-    min-width: 0 !important;
-  }
-
-  /* 8. Insight 卡片高度在手机上改为 auto（内容自适应，不截断）*/
-  div[style*="height:340px"] {
-    height: auto !important;
-    min-height: 280px !important;
-  }
-
-  /* 9. Live Telemetry 卡片等高盒子适配 */
-  div[style*="height:130px"] {
-    height: auto !important;
-    min-height: 100px !important;
-    padding: 10px 8px !important;
-  }
-
-  /* 10. Selectbox / Slider 宽度 */
-  .stSelectbox, .stSlider {
-    width: 100% !important;
-  }
-
-  /* 11. 页面标题字号 */
-  h1[style*="2.4rem"] {
-    font-size: 1.6rem !important;
-  }
-
-  /* 12. tab 标签字号 */
-  button[data-baseweb="tab"] {
-    font-size: 0.78rem !important;
-    padding: 8px 10px !important;
-  }
+  [data-testid="column"] { width: 100% !important; min-width: 100% !important; padding: 0 !important; }
+  .stButton button { width: 100% !important; min-height: 48px !important; font-size: 0.9rem !important; }
+  [data-testid="stDataFrame"] { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+  .js-plotly-plot, .plotly { max-width: 100% !important; }
+  [data-testid="column"] > div > div > div[style*="border-radius:10px"] { min-width: 0 !important; }
+  div[style*="height:340px"] { height: auto !important; min-height: 280px !important; }
+  div[style*="height:130px"] { height: auto !important; min-height: 100px !important; padding: 10px 8px !important; }
+  .stSelectbox, .stSlider { width: 100% !important; }
+  h1[style*="2.4rem"] { font-size: 1.6rem !important; }
+  button[data-baseweb="tab"] { font-size: 0.78rem !important; padding: 8px 10px !important; }
 }
-
-/* ══════════════════════════════════════════════════════
-   小屏平板适配 (769px ~ 1024px)
-   ══════════════════════════════════════════════════════ */
 @media (min-width: 769px) and (max-width: 1024px) {
-  .block-container {
-    padding: 1rem 1.5rem !important;
-  }
+  .block-container { padding: 1rem 1.5rem !important; }
   h1, .stMarkdown h1 { font-size: 1.7rem !important; }
-
-  /* Insight 卡片高度平板上也设为 auto 避免截断 */
-  div[style*="height:340px"] {
-    height: auto !important;
-    min-height: 300px !important;
-  }
+  div[style*="height:340px"] { height: auto !important; min-height: 300px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
-
-
 
 st.markdown("""
 <h1 style="font-size:2.4rem;font-weight:900;margin-bottom:2px;">
@@ -264,37 +187,24 @@ api_client = APIClient(API_BASE_URL)
 os.makedirs("logs", exist_ok=True)
 
 def _persist_log(record: dict):
-    """把单条日志追加写入持久化文件"""
     try:
         with open("logs/session_logs.jsonl", "a", encoding="utf-8") as _f:
             _f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
+# Session state 初始化
 if "use_backend" not in st.session_state:
     st.session_state.use_backend = USE_BACKEND_API
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
-# api_messages：传给 OpenRouter 的真正多轮对话历史（纯 role/content，无 HTML）
 if "api_messages" not in st.session_state:
     st.session_state.api_messages = []
-
 if "calls" not in st.session_state:
     st.session_state.calls = 0
-
 if "metrics" not in st.session_state:
     st.session_state.metrics = {"tokens": 0, "calls": 0, "total_latency": 0.0}
-
-if "tts_enabled" not in st.session_state:
-    st.session_state.tts_enabled = True
-
-if "auto_play_tts" not in st.session_state:
-    st.session_state.auto_play_tts = True
-
 if "logs" not in st.session_state:
-    # 启动时从持久化文件加载历史日志
     os.makedirs("logs", exist_ok=True)
     _loaded_logs = []
     _log_path = "logs/session_logs.jsonl"
@@ -308,145 +218,71 @@ if "logs" not in st.session_state:
         except Exception:
             pass
     st.session_state.logs = _loaded_logs
-
 if "session_id" not in st.session_state:
     st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# ── 当前激活模型显示（侧边栏用）────────────────────────────────
 if "active_variant" not in st.session_state:
     st.session_state.active_variant = "A"
-
-# Safety Fence 7条规则状态（pass/triggered/pending）
 if "fence_status" not in st.session_state:
     st.session_state.fence_status = {
-        "rule1": "pending",  # 禁止催促/命令
-        "rule2": "pending",  # 情绪激动时降级任务
-        "rule3": "pending",  # 危机词汇强制升级
-        "rule4": "pending",  # 高心率触发感知模式
-        "rule5": "pending",  # 噪音超标触发环境提示
-        "rule6": "pending",  # 专注度低时暂停任务
-        "rule7": "pending",  # 输出长度限制<100字
+        "rule1": "pending", "rule2": "pending", "rule3": "pending",
+        "rule4": "pending", "rule5": "pending", "rule6": "pending", "rule7": "pending",
     }
 
-
-# ── Safety Fence 7条规则实时状态计算 ────────────────────────────
+# ── Safety Fence 规则定义 ────────────────────────────────────
 FENCE_RULES = {
-    "rule1": {
-        "label": "禁止催促/命令",
-        "desc": "No Urging / Commands",
-        "icon": "🚫"
-    },
-    "rule2": {
-        "label": "情绪激动→降级任务",
-        "desc": "Emotion → Downgrade Task",
-        "icon": "🌡️"
-    },
-    "rule3": {
-        "label": "危机词汇→强制升级",
-        "desc": "Crisis Words → Escalate",
-        "icon": "🆘"
-    },
-    "rule4": {
-        "label": "高心率→感知介入模式",
-        "desc": "High HR → Sensing Mode",
-        "icon": "❤️"
-    },
-    "rule5": {
-        "label": "噪音超标→环境提示",
-        "desc": "Noise > 75dB → Env Alert",
-        "icon": "🔊"
-    },
-    "rule6": {
-        "label": "专注度低→暂停任务",
-        "desc": "Attention < 40 → Pause",
-        "icon": "🧠"
-    },
-    "rule7": {
-        "label": "回复字数<100字",
-        "desc": "Response < 100 chars",
-        "icon": "✂️"
-    },
+    "rule1": {"label": "禁止催促/命令", "desc": "No Urging / Commands", "icon": "🚫"},
+    "rule2": {"label": "情绪激动→降级任务", "desc": "Emotion → Downgrade Task", "icon": "🌡️"},
+    "rule3": {"label": "危机词汇→强制升级", "desc": "Crisis Words → Escalate", "icon": "🆘"},
+    "rule4": {"label": "高心率→感知介入模式", "desc": "High HR → Sensing Mode", "icon": "❤️"},
+    "rule5": {"label": "噪音超标→环境提示", "desc": "Noise > 75dB → Env Alert", "icon": "🔊"},
+    "rule6": {"label": "专注度低→暂停任务", "desc": "Attention < 40 → Pause", "icon": "🧠"},
+    "rule7": {"label": "回复字数<100字", "desc": "Response < 100 chars", "icon": "✂️"},
 }
 
 def compute_fence_status(hr, noise, attention, os_signal, response_text, safety_flag, action, scenario):
-    """根据当前传感器数据和 AI 回复，实时评估 7 条 Safety Fence 状态"""
     danger_kw = ["撕","不想活","想死","烦死","打人","砸","杀","hate my life","kill","smash","destroy"]
     urge_kw   = ["快点","马上","立刻","赶紧","快去","你必须","hurry","now","immediately","must do"]
-
     status = {}
-    # Rule 1: 输出中是否含催促词
     has_urge = any(w in (response_text or "").lower() for w in urge_kw)
     status["rule1"] = "triggered" if has_urge else "pass"
-
-    # Rule 2: 情绪激动（高心率/高噪音）时 action 是否 suggest_task 或 none
     is_overload = hr > 105 or noise > 75
     status["rule2"] = "triggered" if (is_overload and action == "none") else "pass"
-
-    # Rule 3: 危机词汇检测
     has_crisis = any(w in os_signal.lower() for w in danger_kw)
     status["rule3"] = "triggered" if (has_crisis and action != "escalate") else "pass"
-
-    # Rule 4: 高心率是否触发感知模式（HR>105 时 safety_flag 应关注）
-    status["rule4"] = "pass" if hr > 105 else "pass"   # 触发=已主动感知，pass=正常范围
-    if hr > 105:
-        status["rule4"] = "triggered"   # 高心率已触发传感器调用
-
-    # Rule 5: 噪音超标
+    status["rule4"] = "triggered" if hr > 105 else "pass"
     status["rule5"] = "triggered" if noise > 75 else "pass"
-
-    # Rule 6: 专注度低
     status["rule6"] = "triggered" if attention < 40 else "pass"
-
-    # Rule 7: 回复长度
     resp_len = len(response_text or "")
     status["rule7"] = "triggered" if resp_len > 200 else "pass"
-
     return status
 
-
 def render_fence_statusbar(fence_status: dict):
-    """渲染 7 条 Safety Fence 实时状态栏（原生 Streamlit 组件，紧凑一行）"""
     triggered_count = sum(1 for v in fence_status.values() if v == "triggered")
-    pass_count      = sum(1 for v in fence_status.values() if v == "pass")
-
-    # ── 顶部汇总标签 ──────────────────────────────────────────
+    pass_count = sum(1 for v in fence_status.values() if v == "pass")
     if triggered_count > 0:
-        st.markdown(
-            f"🛡️ **Safety Fence 实时状态** &nbsp;｜&nbsp; "
-            f"<span style='color:#dc2626;font-weight:700;'>⚡ {triggered_count} 条规则触发</span> &nbsp; "
-            f"<span style='color:#16a34a;'>✅ {pass_count} 通过</span>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"🛡️ **Safety Fence 实时状态** &nbsp;｜&nbsp; "
+                    f"<span style='color:#dc2626;font-weight:700;'>⚡ {triggered_count} 条规则触发</span> &nbsp; "
+                    f"<span style='color:#16a34a;'>✅ {pass_count} 通过</span>", unsafe_allow_html=True)
     else:
-        st.markdown(
-            f"🛡️ **Safety Fence 实时状态** &nbsp;｜&nbsp; "
-            f"<span style='color:#16a34a;font-weight:700;'>✅ 全部 {pass_count} 条规则通过</span>",
-            unsafe_allow_html=True
-        )
-
-    # ── 7 列徽章（一行紧凑排列）──────────────────────────────
+        st.markdown(f"🛡️ **Safety Fence 实时状态** &nbsp;｜&nbsp; "
+                    f"<span style='color:#16a34a;font-weight:700;'>✅ 全部 {pass_count} 条规则通过</span>", unsafe_allow_html=True)
     cols = st.columns(7)
     badge_cfg = {
-        "pass":      ("✅", "通过", "#16a34a", "#f0fdf4"),
+        "pass": ("✅", "通过", "#16a34a", "#f0fdf4"),
         "triggered": ("⚡", "触发", "#dc2626", "#fff1f1"),
-        "pending":   ("⏳", "待检", "#9ca3af", "#f9fafb"),
+        "pending": ("⏳", "待检", "#9ca3af", "#f9fafb"),
     }
     for col, (key, rule) in zip(cols, FENCE_RULES.items()):
-        state   = fence_status.get(key, "pending")
+        state = fence_status.get(key, "pending")
         badge, label, color, bg = badge_cfg.get(state, badge_cfg["pending"])
         with col:
             st.markdown(
-                f"<div style='background:{bg};border:1.5px solid {color}44;"
-                f"border-radius:10px;padding:6px 4px;text-align:center;'>"
+                f"<div style='background:{bg};border:1.5px solid {color}44;border-radius:10px;padding:6px 4px;text-align:center;'>"
                 f"<div style='font-size:1.2em;'>{rule['icon']}</div>"
-                f"<div style='font-size:0.65em;font-weight:700;color:{color};'>"
-                f"{badge} {label}</div>"
-                f"<div style='font-size:0.6em;color:#555;line-height:1.2;'>"
-                f"{rule['label']}</div>"
-                f"</div>",
-                unsafe_allow_html=True
+                f"<div style='font-size:0.65em;font-weight:700;color:{color};'>{badge} {label}</div>"
+                f"<div style='font-size:0.6em;color:#555;line-height:1.2;'>{rule['label']}</div>"
+                f"</div>", unsafe_allow_html=True
             )
-
 
 # 🚀 Tool Calling 定义
 tools = [
@@ -455,26 +291,13 @@ tools = [
         "function": {
             "name": "get_current_biometrics_and_env",
             "description": "当用户表达不适、烦躁或遇到危险时，主动调用此工具获取用户当前的实时心率(HR)、专注度(Attention)和环境噪音(Noise)，以便做出准确的临床心理学判断。",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            },
+            "parameters": {"type": "object", "properties": {}, "required": []},
         }
     }
 ]
 
-
 def get_ai_reply(user_input_text, system_prompt=None, api_history=None, current_hr=None, current_noise=None, session_id=None):
-    """
-    双轨架构核心函数（修复版）：
-    - system_prompt: Safety Fence + 角色设定，通过 role:system 传递，模型层面硬约束
-    - user_input_text: 用户/传感器的实际输入（纯净文本，无 HTML）
-    """
-    # ── UTF-8 安全处理 ─────────────────────────────────────────
     safe_input = str(user_input_text).encode('utf-8', 'ignore').decode('utf-8')
-
-    # ── 轨道 1：输入过滤（关键词黑名单）───────────────────────
     is_input_safe, filtered_input, block_type = input_filter.filter(safe_input)
     if not is_input_safe:
         return json.dumps({
@@ -486,7 +309,6 @@ def get_ai_reply(user_input_text, system_prompt=None, api_history=None, current_
             "clinical_reasoning": f"输入被安全围栏拦截: {block_type}"
         }), 0, 0
 
-    # ── 轨道 2：危机检测（自伤 / 极端语言）────────────────────
     is_crisis, crisis_type, crisis_level = crisis_handler.detect_crisis(filtered_input)
     if is_crisis and crisis_type:
         crisis_response = crisis_handler.get_crisis_response(crisis_type, "zh")
@@ -502,52 +324,31 @@ def get_ai_reply(user_input_text, system_prompt=None, api_history=None, current_
             "response_text": crisis_response,
             "emotion": "concerned",
             "action": "escalate",
-            "micro_task": {
-                "description": "联系信任的大人或拨打援助热线",
-                "difficulty": "minimal"
-            },
+            "micro_task": {"description": "联系信任的大人或拨打援助热线", "difficulty": "minimal"},
             "safety_flag": True,
             "clinical_reasoning": f"危机检测触发: {crisis_type}, 级别: {crisis_level.value}"
         }), 0, 0
 
-    # ── JSON 格式约束（附加在 user 消息末尾）──────────────────
     json_constraint = """
-
 【输出格式强制要求】严格返回以下 JSON 结构，不得包含任何 Markdown 标记或代码块：
 {
   "response_text": "Alice说的话，中英双语，语气温暖，不超过100字",
   "emotion": "happy|concerned|encouraging|neutral",
   "action": "none|escalate|log|suggest_task",
-  "micro_task": {
-    "description": "一个简单的微任务建议（情绪不稳定时必填）",
-    "difficulty": "minimal|easy|moderate"
-  },
+  "micro_task": {"description": "微任务建议", "difficulty": "minimal|easy|moderate"},
   "safety_flag": false,
   "clinical_reasoning": "内部推理说明（简短）"
 }"""
 
-    # ── 选择模型 ───────────────────────────────────────────────
-    model_to_use = VARIANT_B if st.session_state.get("active_variant") == "B" else VARIANT_A
-
-    # ── ✅ 修复核心：正确构建 messages 结构 ────────────────────
-    # Safety Fence（7条ADHD规则）+ 角色设定 → role:system（模型级硬约束）
-    # 用户实际输入 → role:user（干净文本）
     messages = []
     if system_prompt:
-        messages.append({
-            "role": "system",
-            "content": system_prompt   # PromptBuilder 生成的完整角色 + Safety Fence
-        })
-    # ✅ 注入真实多轮对话历史（纯文本，无 HTML）
+        messages.append({"role": "system", "content": system_prompt})
     if api_history:
         messages.extend(api_history)
-    messages.append({
-        "role": "user",
-        "content": filtered_input + json_constraint
-    })
+    messages.append({"role": "user", "content": filtered_input + "\n\n" + json_constraint})
 
+    model_to_use = VARIANT_B if st.session_state.get("active_variant") == "B" else VARIANT_A
     start_time = time.time()
-
     try:
         response = client.chat.completions.create(
             model=model_to_use,
@@ -562,7 +363,6 @@ def get_ai_reply(user_input_text, system_prompt=None, api_history=None, current_
     response_message = response.choices[0].message
     tokens = response.usage.total_tokens if (hasattr(response, 'usage') and response.usage) else 0
 
-    # ── Tool Calling：传感器数据回调 ───────────────────────────
     if response_message.tool_calls:
         messages.append(response_message)
         for tool_call in response_message.tool_calls:
@@ -584,12 +384,9 @@ def get_ai_reply(user_input_text, system_prompt=None, api_history=None, current_
     else:
         final_content = response_message.content or ""
 
-    # ── 输出过滤（禁止催促 / 指令性语言）─────────────────────
     is_appropriate, filtered_output = output_filter.filter(final_content)
-
     latency = round(time.time() - start_time, 2)
     return filtered_output, tokens, latency
-
 
 # --- 2. 侧边栏 ---
 with st.sidebar:
@@ -631,7 +428,6 @@ with st.sidebar:
             else:
                 backend_model = VARIANT_B
 
-        # ── A/B 切换开关（核心演示功能）────────────────────────
         st.markdown("---")
         st.markdown("#### 🔀 当前激活模型")
         variant_choice = st.radio(
@@ -640,24 +436,12 @@ with st.sidebar:
             index=0 if st.session_state.active_variant == "A" else 1
         )
         st.session_state.active_variant = "A" if "Variant A" in variant_choice else "B"
-
         current_model_name = VARIANT_A if st.session_state.active_variant == "A" else VARIANT_B
         st.caption(f"🤖 当前模型: `{current_model_name}`")
-
         if st.session_state.active_variant == "A":
             st.info("🔵 GLM-5-Turbo：本地安全围栏策略，中文原生优化")
         else:
             st.warning("🟡 Claude Sonnet 4：宪法AI安全架构，英文推理更强")
-
-    # TTS 语音输出开关
-    st.divider()
-    with st.expander("🔊 语音输出设置", expanded=True):
-        st.session_state.tts_enabled = st.toggle("启用语音朗读", value=True)
-        st.session_state.auto_play_tts = st.toggle("自动播放回复", value=st.session_state.tts_enabled, disabled=not st.session_state.tts_enabled)
-        if not st.session_state.tts_enabled:
-            st.caption("语音朗读已禁用")
-
-    st.divider()
 
     with st.expander("🎛️ Sensor Console (传感器控制台)", expanded=True):
         st.markdown("✨ **Quick Demo Scenarios (快速场景)**")
@@ -716,7 +500,6 @@ with st.sidebar:
         ]
         os_options = list(dict.fromkeys(os_options))
         selected_os = st.selectbox("快捷话术", os_options)
-
         custom_os = st.text_input("手动输入:", value="" if "Custom Input" not in selected_os else "在此输入")
 
         st.markdown("**🌍 Environmental**")
@@ -739,10 +522,8 @@ with st.sidebar:
         col_m1.metric("🪙 Tokens", f"{st.session_state.metrics['tokens']}")
         avg_lat = 0 if st.session_state.metrics['calls'] == 0 else round(st.session_state.metrics['total_latency'] / st.session_state.metrics['calls'], 2)
         col_m2.metric("⏱️ Latency", f"{avg_lat}s")
-
         log_count = len(st.session_state.get('logs', []))
         st.caption(f"已记录对话: **{log_count}** 条")
-
         if log_count > 0:
             df_logs = pd.DataFrame(st.session_state.logs)
             csv_data = df_logs.to_csv(index=False).encode('utf-8')
@@ -753,7 +534,6 @@ with st.sidebar:
                 mime="text/csv",
                 width="stretch"
             )
-
 
 # --- 3. 核心逻辑：危机分级与路由 ---
 os_signal = custom_os if "Custom Input" in selected_os else selected_os
@@ -781,7 +561,6 @@ elif is_overload:
     current_scenario = "meltdown_risk"
 elif is_distracted:
     current_scenario = "distracted"
-
 
 # --- 4. 双端界面 TABS ---
 tab_child, tab_parent = st.tabs(["🤖 Child UI (儿童交互界面)", "📈 Parent Dashboard (家长/教师监控端)"])
@@ -811,34 +590,31 @@ with tab_child:
             st.plotly_chart(fig_att, width="stretch")
 
         with col3:
-            # ── 正确提取地点名（"-" 后半段）+ 图标映射 ───────
             _loc_parts   = sim_location.split(" - ", 1)
             _loc_display = _loc_parts[1].strip() if len(_loc_parts) > 1 else sim_location
             _loc_icon_map = {
                 "Bedroom": "🛏️", "Living Room": "🛋️", "Dining Table": "🍽️",
                 "Classroom": "📚", "Playground": "⛹️", "Canteen": "🥡",
-                "MTR Train": "🚇", "MTR Station": "🚉",
-                "Bus": "🚌", "Street": "🚶",
-                "Mall": "🛍️", "Supermarket": "🛒", "Restaurant": "🍜",
-                "Park": "🌳", "Theme Park": "🎡",
+                "MTR Train": "🚇", "MTR Station": "🚉", "Bus": "🚌", "Street": "🚶",
+                "Mall": "🛍️", "Supermarket": "🛒", "Restaurant": "🍜", "Park": "🌳", "Theme Park": "🎡",
             }
             _loc_icon = _loc_icon_map.get(_loc_display, "📍")
             _HIGH_NOISE_LOCS = ["MTR", "Restaurant", "Mall", "Supermarket", "Bus", "Street", "Theme Park"]
             _loc_bg = "#fff3cd" if any(h in sim_location for h in _HIGH_NOISE_LOCS) else "#e8f4f8"
             st.markdown(f"""<div style="background:{_loc_bg};border-radius:8px;padding:14px;height:130px;
               display:flex;flex-direction:column;justify-content:center;align-items:center;margin-top:18px;">
-              <div style="font-size:1.0rem;color:#444;font-weight:700;letter-spacing:.02em;">📍 Location (定位)</div>
+              <div style="font-size:1.0rem;color:#444;font-weight:700;">📍 Location (定位)</div>
               <div style="font-size:1.6rem;margin-top:4px;">{_loc_icon}</div>
               <div style="font-size:1.05rem;font-weight:800;color:#1a1a2e;margin-top:2px;">{_loc_display}</div>
             </div>""", unsafe_allow_html=True)
 
         with col4:
             _noise_val = sim_noise
-            _noise_bg  = "#ffe6e6" if _noise_val > 75 else "#e8f5e9"
+            _noise_bg = "#ffe6e6" if _noise_val > 75 else "#e8f5e9"
             _noise_col = "#c0392b" if _noise_val > 75 else "#1e7e34"
             st.markdown(f"""<div style="background:{_noise_bg};border-radius:8px;padding:14px;height:130px;
               display:flex;flex-direction:column;justify-content:center;align-items:center;margin-top:18px;">
-              <div style="font-size:1.0rem;color:#444;font-weight:700;letter-spacing:.02em;">🔊 Noise (噪音)</div>
+              <div style="font-size:1.0rem;color:#444;font-weight:700;">🔊 Noise (噪音)</div>
               <div style="font-size:1.25rem;font-weight:800;color:{_noise_col};margin-top:6px;">{_noise_val} dB</div>
               <div style="font-size:0.75rem;color:{_noise_col};margin-top:2px;">{"⚠️ High" if _noise_val>75 else "✅ Normal"}</div>
             </div>""", unsafe_allow_html=True)
@@ -860,24 +636,22 @@ with tab_child:
     # --- 5. 主动干预触发与交互 ---
     st.markdown("### 💬 Interactive Interface (交互界面)")
 
-    # ── 当前临床策略标签 ──────────────────────────────────────
     _strategy_labels = {
-        "role_reversal":          "🎭 Role Reversal (角色反转)",
-        "sensory_grounding":      "🌿 Sensory Grounding (感官接地)",
-        "micro_task_chunking":    "🧩 Task Chunking (微任务切块)",
+        "role_reversal": "🎭 Role Reversal (角色反转)",
+        "sensory_grounding": "🌿 Sensory Grounding (感官接地)",
+        "micro_task_chunking": "🧩 Task Chunking (微任务切块)",
         "delay_of_gratification": "⏳ Delay of Gratification (延迟满足)",
-        "breathing_anchor":       "🫁 Breathing Anchor (呼吸锚定)",
-        "pre_soothing":           "🛡️ Pre-soothing (预安抚)",
+        "breathing_anchor": "🫁 Breathing Anchor (呼吸锚定)",
+        "pre_soothing": "🛡️ Pre-soothing (预安抚)",
     }
     _scenario_strategy = {
-        "normal":"micro_task_chunking","meltdown_risk":"sensory_grounding",
-        "danger_alert":"breathing_anchor","homework_anxiety":"role_reversal",
-        "home_hyperactive":"micro_task_chunking","morning_delay":"micro_task_chunking",
-        "restaurant_waiting":"sensory_grounding","toy_fixation":"delay_of_gratification",
-        "distracted":"micro_task_chunking",
+        "normal": "micro_task_chunking", "meltdown_risk": "sensory_grounding",
+        "danger_alert": "breathing_anchor", "homework_anxiety": "role_reversal",
+        "home_hyperactive": "micro_task_chunking", "morning_delay": "micro_task_chunking",
+        "restaurant_waiting": "sensory_grounding", "toy_fixation": "delay_of_gratification",
+        "distracted": "micro_task_chunking",
     }
-    _active_strategy = _strategy_labels.get(
-        _scenario_strategy.get(current_scenario,"micro_task_chunking"), "🧩 微任务切块")
+    _active_strategy = _strategy_labels.get(_scenario_strategy.get(current_scenario, "micro_task_chunking"), "🧩 微任务切块")
     st.markdown(f"""
     <div style="background:#f0f4ff;padding:8px 14px;border-radius:8px;
          border-left:4px solid #4e79a7;margin-bottom:10px;font-size:0.9em;">
@@ -893,11 +667,9 @@ with tab_child:
             for _k in st.session_state.fence_status:
                 st.session_state.fence_status[_k] = "pending"
             st.session_state["_fence_just_reset"] = True
-            st.session_state.messages = []       # 清空 UI 聊天历史
-            st.session_state.api_messages = []   # 清空 API 多轮历史
+            st.session_state.messages = []
+            st.session_state.api_messages = []
 
-    # ── Safety Fence 实时状态栏 ───────────────────────────────
-    # 重置后跳过本帧自动计算，确保 pending 状态能被看到
     if not st.session_state.get("_fence_just_reset", False):
         _live_fence = compute_fence_status(
             hr=sim_hr, noise=sim_noise, attention=sim_attention,
@@ -913,7 +685,7 @@ with tab_child:
             elif _v == "pass":
                 st.session_state.fence_status[_k] = "pass"
     else:
-        st.session_state["_fence_just_reset"] = False  # 下一帧恢复正常
+        st.session_state["_fence_just_reset"] = False
     render_fence_statusbar(st.session_state.fence_status)
 
     for msg in st.session_state.messages:
@@ -935,8 +707,8 @@ with tab_child:
             with st.spinner(f"Alice is sensing... [{active_model_display}]"):
                 try:
                     raw_response, tokens, latency = get_ai_reply(
-                        user_input_text=os_signal,        # 用户内心独白（纯文本）
-                        system_prompt=system_prompt,       # Safety Fence 在 system 层生效
+                        user_input_text=os_signal,
+                        system_prompt=system_prompt,
                         current_hr=sim_hr,
                         current_noise=sim_noise,
                         session_id=st.session_state.session_id
@@ -991,18 +763,7 @@ with tab_child:
                             """, unsafe_allow_html=True)
 
                         st.markdown(f"**🗣️ Alice:** \n\n {response_text}")
-                        
-                        # 朗读按钮 + 自动播放
-                        col_tts1, col_tts2 = st.columns([1, 4])
-                        with col_tts1:
-                            if st.session_state.tts_enabled:
-                                if st.button("🔊 朗读", key=f"tts_{st.session_state.calls}", use_container_width=True):
-                                    play_teacher_voice(response_text)
-                            else:
-                                st.caption("语音已禁用")
-                        with col_tts2:
-                            if st.session_state.tts_enabled and st.session_state.auto_play_tts:
-                                play_teacher_voice(response_text)
+                        play_teacher_voice(response_text)
 
                         if micro_task and micro_task.get('description'):
                             st.info(f"💡 微任务建议: {micro_task.get('description')} (难度: {micro_task.get('difficulty', 'easy')})")
@@ -1029,7 +790,6 @@ with tab_child:
                         st.session_state.logs.append(_log_record_1)
                         _persist_log(_log_record_1)
 
-                        # ── 更新 Safety Fence 状态（基于真实 AI 回复）────
                         _fence_update = compute_fence_status(
                             hr=sim_hr, noise=sim_noise, attention=sim_attention,
                             os_signal=os_signal,
@@ -1047,7 +807,7 @@ with tab_child:
                     except (json.JSONDecodeError, Exception) as _json_err:
                         _m = re.search(r'"response_text"\s*:\s*"([^"]*?)"', raw_response)
                         _fallback_text = _m.group(1) if _m else raw_response.replace("```json","").replace("```","").strip()
-                        st.markdown(f"**\U0001f5e3\ufe0f Alice:** {_fallback_text}")
+                        st.markdown(f"**🗣️ Alice:** {_fallback_text}")
                         st.session_state.messages.append({"role": "assistant", "content": _fallback_text})
                         _persist_log({
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1075,18 +835,14 @@ with tab_child:
     <div style="background:#f0f7ff;border:1.5px dashed #4e79a7;border-radius:10px;
         padding:10px 14px;margin-bottom:8px;">
     <span style="font-weight:700;color:#1976d2;">🎤 语音版 Alice</span>
-    <span style="font-size:0.82em;color:#666;">GLM ASR 识别 + Minimax TTS 朗读</span>
+    <span style="font-size:0.82em;color:#666;">GLM ASR 识别 + Edge TTS 朗读</span>
     </div>
     """, unsafe_allow_html=True)
 
-    # 语音输入：麦克风（Streamlit 1.51+ 原生支持）
     _audio_input = st.audio_input("🎙️ 按住说话", sample_rate=16000)
-    
-    # 备用：文件上传（兼容旧环境）
     with st.expander("📎 或上传录音文件", expanded=False):
         _audio_file = st.file_uploader("🎙️ 上传录音（WAV）", type=["wav"])
 
-    # 处理任一输入
     _audio_bytes = None
     if _audio_input is not None:
         _audio_bytes = _audio_input.read()
@@ -1098,7 +854,6 @@ with tab_child:
             _voice_text = speech_to_text(_audio_bytes)
             if not _voice_text:
                 _voice_text = "（未能识别语音，请重试或使用文字输入）"
-            # 原有逻辑继续...
         if _voice_text:
             st.markdown(f"**🗣️ 你说：** `{_voice_text}`")
             with st.chat_message("user"):
@@ -1128,24 +883,13 @@ with tab_child:
 
                         try:
                             _vclean = _vraw.replace("```json","").replace("```","").strip()
-                            _vdata  = json.loads(_vclean)
+                            _vdata = json.loads(_vclean)
                             _vspoken = _vdata.get("response_text", _vraw)
                         except Exception:
                             _vspoken = _vraw
 
                         st.markdown(f"**🗣️ Alice:** {_vspoken}")
-                        
-                        # 朗读按钮 + 自动播放
-                        col_vtts1, col_vtts2 = st.columns([1, 4])
-                        with col_vtts1:
-                            if st.session_state.tts_enabled:
-                                if st.button("🔊 朗读", key=f"vtts_{st.session_state.calls}", use_container_width=True):
-                                    play_teacher_voice(_vspoken)
-                            else:
-                                st.caption("语音已禁用")
-                        with col_vtts2:
-                            if st.session_state.tts_enabled and st.session_state.auto_play_tts:
-                                play_teacher_voice(_vspoken)
+                        play_teacher_voice(_vspoken)   # 直接显示播放器
 
                         st.session_state.messages.append({"role": "assistant", "content": _vspoken})
                         st.session_state.api_messages.append({"role": "user", "content": _voice_text})
@@ -1183,18 +927,16 @@ with tab_child:
                 try:
                     chat_scenario = "danger_alert" if any(word in prompt.lower() for word in danger_keywords) else "normal"
 
-                    # ✅ system_prompt 承载 Safety Fence + 角色设定
                     chat_system_prompt = PromptBuilder.build_scenario_prompt(
                         chat_scenario,
                         sim_inner_os=prompt,
                         sim_location=sim_location
                     )
 
-                    # ✅ 使用 api_messages 实现真正多轮对话（纯文本，无 HTML 污染）
                     raw_response, tokens, latency = get_ai_reply(
-                        user_input_text=prompt,             # 只传最新输入
-                        system_prompt=chat_system_prompt,   # Safety Fence 在 system 层生效
-                        api_history=st.session_state.api_messages,  # 真正多轮历史
+                        user_input_text=prompt,
+                        system_prompt=chat_system_prompt,
+                        api_history=st.session_state.api_messages,
                         current_hr=sim_hr,
                         current_noise=sim_noise,
                         session_id=st.session_state.session_id
@@ -1224,16 +966,14 @@ with tab_child:
                         </div>
                         """, unsafe_allow_html=True)
                         st.markdown(spoken_text)
+                        play_teacher_voice(spoken_text)   # 添加音频播放器
 
-                        # ✅ UI 消息列表（用于页面渲染）
                         st.session_state.messages.append({
                             "role": "assistant",
                             "content": spoken_text
                         })
-                        # ✅ API 消息列表（用于多轮对话传入模型，纯文本无 HTML）
                         st.session_state.api_messages.append({"role": "user", "content": prompt})
                         st.session_state.api_messages.append({"role": "assistant", "content": spoken_text})
-                        # 防止 token 超限：只保留最近 20 条（10轮对话）
                         if len(st.session_state.api_messages) > 20:
                             st.session_state.api_messages = st.session_state.api_messages[-20:]
 
@@ -1257,7 +997,6 @@ with tab_child:
                         st.session_state.logs.append(_log_record_2)
                         _persist_log(_log_record_2)
 
-                        # ── 更新 Safety Fence 状态（Chat 回复后）──────────
                         _fence_chat = compute_fence_status(
                             hr=sim_hr, noise=sim_noise, attention=sim_attention,
                             os_signal=prompt,
@@ -1294,15 +1033,13 @@ with tab_child:
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-
-    # --- 6. Footer: MTR Panel (shown only in Child tab context) ---
+    # --- 6. Footer: MTR Panel ---
     st.divider()
     st.markdown("### 📡 MTR Real-time Data Integration (港铁实时数据融合) · DATA.GOV.HK Live API")
     _mtr_placeholder = st.empty()
     with _mtr_placeholder.container():
         st.markdown("**🚇 Live Schedule Query + Alice Pre-soothing Trigger Demo (实时班次查询 + 预安抚触发演示)**")
 
-        # ── 真实调用 MTR Next Train API ─────────────────────────
         from datetime import datetime as _dt
 
         MTR_LINES = {
@@ -1329,14 +1066,11 @@ with tab_child:
             "KTL": {"WHA":"黄埔 Whampoa","HOM":"何文田 Ho Man Tin","YMT":"油麻地 Yau Ma Tei","MOK":"旺角 Mong Kok","PRE":"太子 Prince Edward","SKM":"石硖尾 Shek Kip Mei","KOT":"九龙塘 Kowloon Tong","LOF":"乐富 Lok Fu","WTS":"黄大仙 Wong Tai Sin","DIH":"钻石山 Diamond Hill","CHH":"彩虹 Choi Hung","KOB":"九龙湾 Kowloon Bay","NTK":"牛头角 Ngau Tau Kok","KWT":"观塘 Kwun Tong","LAT":"蓝田 Lam Tin","YAT":"油塘 Yau Tong","TIK":"调景岭 Tiu Keng Leng"},
             "DRL": {"SUN":"欣澳 Sunny Bay","DIS":"迪士尼 Disneyland Resort"},
         }
-        # 动态根据所选路线更新车站列表
         sel_line = st.selectbox("🚇 Select Line (选择路线)", list(MTR_LINES.keys()),
                                 format_func=lambda x: f"{x}  {MTR_LINES[x]}", key="mtr_line_sel")
         _stations = MTR_STATIONS_BY_LINE.get(sel_line, {})
         sel_sta = st.selectbox("📍 Select Station (选择车站)", list(_stations.keys()),
                                format_func=lambda x: _stations[x], key="mtr_sta_sel")
-
-
 
         if st.button("🔄 Fetch Live Schedule (获取实时班次)", width="stretch"):
             try:
@@ -1349,7 +1083,6 @@ with tab_child:
                     _up = _trains.get("UP", [])
                     _down = _trains.get("DOWN", [])
 
-                    # 计算下一班时间差 → 推算拥挤度
                     def _get_wait(trains):
                         if not trains:
                             return None, None
@@ -1365,7 +1098,6 @@ with tab_child:
                     up_wait, up_time   = _get_wait(_up)
                     down_wait, down_time = _get_wait(_down)
 
-                    # 拥挤度推算：等待时间 > 5 分钟 = 可能延误/拥挤
                     def _crowd_level(wait):
                         if wait is None: return "⚪ 未知", "#888"
                         if wait <= 2:    return "🟢 畅通", "#28a745"
@@ -1395,11 +1127,8 @@ with tab_child:
     </div>
     """, unsafe_allow_html=True)
 
-                    # ── Alice 的 Pre-soothing 触发逻辑 ────────────
                     is_mtr_location = "MTR" in sim_location or "Transport" in sim_location
-                    if is_mtr_location and (
-                        (up_wait and up_wait > 5) or (down_wait and down_wait > 5)
-                    ):
+                    if is_mtr_location and ((up_wait and up_wait > 5) or (down_wait and down_wait > 5)):
                         st.warning("""
     ⚠️ **Alice Pre-soothing 已触发！**
     检测到：MTR 可能拥挤 + Lok 当前在车站
@@ -1421,22 +1150,12 @@ with tab_child:
         with col_mtr1:
             st.caption("🔗 Live API (实时接口): `https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php?line={LINE}&sta={STATION}`")
 
-
-
-
-
 # --- 家长监控端 ---
-
-# --- 家长监控端（完整版）---
-# ════════════════════════════════════════════════════════════════
-# 家长 / 教师 Dashboard — 完整版
-# ════════════════════════════════════════════════════════════════
 with tab_parent:
     st.markdown("### 👨‍👩‍👦 Parent & Teacher Dashboard (家长 & 教师监控)")
 
     logs = st.session_state.get("logs", [])
 
-    # ── 时间筛选 ────────────────────────────────────────────────
     _tf_col1, _tf_col2, _tf_col3 = st.columns([2, 0.8, 1.2])
     with _tf_col1:
         st.markdown("#### 📅 Data Filter (数据筛选)")
@@ -1446,7 +1165,6 @@ with tab_parent:
     with _tf_col3:
         time_range = st.selectbox("tr", ["This Session (本次会话)", "This Week (本周)", "This Month (本月)"],
                                   label_visibility="collapsed", key="time_range_sel")
-    # map display label back to internal key
     _tr_map = {"This Session (本次会话)": "本次会话", "This Week (本周)": "本周", "This Month (本月)": "本月"}
     time_range = _tr_map.get(time_range, "本次会话")
 
@@ -1454,7 +1172,6 @@ with tab_parent:
         df = pd.DataFrame(logs)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         now = datetime.now()
-        # 本次会话：取当前 session_id 对应的启动时间
         _session_start_str = st.session_state.get("session_id", "19700101_000000")
         try:
             _session_start = datetime.strptime(_session_start_str, "%Y%m%d_%H%M%S")
@@ -1470,7 +1187,6 @@ with tab_parent:
     else:
         df_f = pd.DataFrame()
 
-    # ── KPI Cards (关键指标) ────────────────────────────────────────────────
     col1, col2, col3, col4 = st.columns(4)
     if not df_f.empty:
         alert_count   = len(df_f[df_f["scenario"] != "normal"])
@@ -1484,7 +1200,6 @@ with tab_parent:
         total_calls = 0; safety_rate = 100.0
 
     def _kpi_card(icon, label_en, label_zh, value, sub="", bg="#f8f9fa", val_color="#1a1a2e"):
-        # Always render sub row (invisible if empty) so all cards stay the same height
         sub_color = "#666"
         sub_html = (
             f"<div style='font-size:0.85rem;color:{sub_color};font-weight:600;margin-top:6px;height:1.4em;line-height:1.4em;'>{sub}</div>"
@@ -1523,7 +1238,6 @@ with tab_parent:
 
     st.divider()
 
-    # ── 互动趋势 + 场景分布（并排）────────────────────────────
     st.markdown("#### 📈 Interaction Trends & Scene Distribution (互动趋势 & 场景分布)")
     chart_col1, chart_col2 = st.columns([2, 1])
 
@@ -1567,20 +1281,19 @@ with tab_parent:
     with chart_col2:
         if not df_f.empty:
             scenario_map = {
-                "normal":           "✅ 平稳",
-                "meltdown_risk":    "⚠️ 过载",
-                "danger_alert":     "🚨 危机",
+                "normal": "✅ 平稳",
+                "meltdown_risk": "⚠️ 过载",
+                "danger_alert": "🚨 危机",
                 "homework_anxiety": "📚 作业",
                 "home_hyperactive": "🏠 多动",
-                "morning_delay":    "🌅 晨间",
-                "restaurant_waiting":"🍽️ 等位",
-                "toy_fixation":     "🧸 固着",
-                "distracted":       "👀 涣散",
+                "morning_delay": "🌅 晨间",
+                "restaurant_waiting": "🍽️ 等位",
+                "toy_fixation": "🧸 固着",
+                "distracted": "👀 涣散",
             }
             sc_counts = df_f["scenario"].value_counts().reset_index()
             sc_counts.columns = ["scenario", "count"]
-            sc_counts["label"] = sc_counts["scenario"].map(
-                lambda x: scenario_map.get(x, x))
+            sc_counts["label"] = sc_counts["scenario"].map(lambda x: scenario_map.get(x, x))
 
             fig_pie = go.Figure(go.Pie(
                 labels=sc_counts["label"],
@@ -1602,7 +1315,6 @@ with tab_parent:
 
     st.divider()
 
-    # ── 定位热点 + 生理指标散点（并排）────────────────────────
     st.markdown("#### 📍 Location Frequency & HR–Attention Distribution (地点频率 & 心率–专注度分布)")
     loc_col, scatter_col = st.columns(2)
 
@@ -1660,7 +1372,6 @@ with tab_parent:
 
     st.divider()
 
-    # ── A/B 模型对比 ────────────────────────────────────────────
     if not df_f.empty and "variant" in df_f.columns and df_f["variant"].nunique() > 0:
         st.markdown("#### 🔀 A/B 模型对比分析")
         ab_agg = df_f.groupby("variant").agg(
@@ -1678,9 +1389,7 @@ with tab_parent:
         st.dataframe(ab_agg, width="stretch", hide_index=True)
         st.divider()
 
-    # ── 安全围栏触发日志 ────────────────────────────────────────
     st.markdown("#### 🛡️ Safety Fence Log (安全围栏触发记录)")
-
     fence_events = []
     try:
         with open("logs/safety_events.jsonl", "r", encoding="utf-8") as f:
@@ -1702,7 +1411,6 @@ with tab_parent:
 
     st.divider()
 
-    # ── 警报历史表 ──────────────────────────────────────────────
     st.markdown("#### 🚨 Real Session Logs (互动记录)")
     if not df_f.empty:
         display_cols = ["timestamp","scenario","location",
@@ -1722,7 +1430,6 @@ with tab_parent:
     else:
         st.info("暂无警报记录。请先在儿童界面触发几次对话。")
 
-    # ── 导出按钮 ────────────────────────────────────────────────
     if not df_f.empty:
         csv_data = pd.DataFrame(logs).to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -1735,18 +1442,10 @@ with tab_parent:
 
     st.divider()
 
-    # ── AI 智能洞察（3 张卡片）────────────────────────────────
     st.markdown("#### 📝 AI Weekly Insights (智能洞察)")
 
-    # ── 通用卡片渲染函数 ─────────────────────────────────────
     def _insight_card(icon, title, subtitle, body, tag_text, tag_color,
                       border_color, bg_color, tag_bg, tip="", tip_bg="", tip_color=""):
-        """
-        tip      : 底部建议文字（不含 <span> 标签，函数内统一渲染）
-        tip_bg   : 建议标签背景色
-        tip_color: 建议标签文字颜色
-        三张卡片的 tip 都渲染在同一固定底部区域，确保水平对齐。
-        """
         tip_html = f"""
           <div style="margin-top:auto;padding-top:10px;">
             <span style="background:{tip_bg};padding:4px 10px;border-radius:6px;
@@ -1754,46 +1453,39 @@ with tab_parent:
               {tip}
             </span>
           </div>""" if tip else """<div style="margin-top:auto;padding-top:10px;height:32px;"></div>"""
-
         return f"""
         <div style="background:{bg_color};border:1.5px solid {border_color}33;
              border-radius:14px;padding:20px 22px;
              min-height:340px;height:340px;
              position:relative;box-sizing:border-box;
              display:flex;flex-direction:column;">
-          <!-- 角标 -->
           <div style="position:absolute;top:14px;right:14px;background:{tag_bg};
                color:{tag_color};font-size:0.68em;font-weight:700;
                padding:2px 10px;border-radius:99px;border:1px solid {tag_color}55;">
             {tag_text}
           </div>
-          <!-- 图标 + 标题 -->
           <div style="font-size:2em;margin-bottom:6px;">{icon}</div>
           <div style="font-weight:800;font-size:1.0em;color:#1e293b;margin-bottom:2px;">
             {title}
           </div>
           <div style="font-size:0.78em;color:#64748b;margin-bottom:10px;">{subtitle}</div>
-          <!-- 分隔线 -->
           <div style="border-top:1px solid {border_color}44;margin-bottom:10px;"></div>
-          <!-- 正文内容 -->
           <div style="font-size:0.86em;color:#374151;line-height:1.6;">{body}</div>
-          <!-- 底部建议标签（固定底部，三卡片对齐）-->
           {tip_html}
         </div>"""
 
     if not df_f.empty:
         scenario_map_zh = {
-            "meltdown_risk":     "港铁感官过载",
-            "danger_alert":      "危机警报",
-            "homework_anxiety":  "作业焦虑",
-            "home_hyperactive":  "居家多动",
-            "morning_delay":     "晨间发呆",
-            "restaurant_waiting":"餐厅等位",
-            "toy_fixation":      "商场冲动固着",
-            "distracted":        "注意力涣散",
+            "meltdown_risk": "港铁感官过载",
+            "danger_alert": "危机警报",
+            "homework_anxiety": "作业焦虑",
+            "home_hyperactive": "居家多动",
+            "morning_delay": "晨间发呆",
+            "restaurant_waiting": "餐厅等位",
+            "toy_fixation": "商场冲动固着",
+            "distracted": "注意力涣散",
         }
 
-        # ── 卡片 1：高危场景规律 ──────────────────────────────
         top_scenario    = df_f[df_f["scenario"] != "normal"]["scenario"].value_counts()
         top_sc_label    = top_scenario.index[0] if len(top_scenario) > 0 else "无"
         top_sc_zh       = scenario_map_zh.get(top_sc_label, top_sc_label)
@@ -1814,14 +1506,13 @@ with tab_parent:
           🔁 次高危场景：<b>{second_sc}</b>"""
         card1_tip = f"💡 建议：{top_noise_loc} 场景提前使用降噪耳机"
 
-        # ── 卡片 2：专注度与干预效果 ─────────────────────────
         avg_att     = int(df_f["attention"].mean())
         avg_hr      = int(df_f["hr"].mean())
         total_calls = len(df_f)
         suggest_n   = len(df_f[df_f.get("action", pd.Series(["none"]*len(df_f))) == "suggest_task"]) if "action" in df_f.columns else 0
 
         att_level   = "良好 🟢" if avg_att >= 60 else ("中等 🟡" if avg_att >= 40 else "偏低 🔴")
-        att_advice  = "继续保持规律微任务节奏。" if avg_att >= 60 else                       "建议高注意力任务前先做 2 分钟深呼吸。" if avg_att >= 40 else                       "专注度严重偏低，建议减少任务量并增加休息。"
+        att_advice  = "继续保持规律微任务节奏。" if avg_att >= 60 else "建议高注意力任务前先做 2 分钟深呼吸。" if avg_att >= 40 else "专注度严重偏低，建议减少任务量并增加休息。"
         att_color   = "#16a34a" if avg_att >= 60 else ("#d97706" if avg_att >= 40 else "#dc2626")
 
         card2_body = f"""
@@ -1834,10 +1525,8 @@ with tab_parent:
           💡 微任务触发：<b>{suggest_n} 次</b> / 共 {total_calls} 次对话"""
         card2_tip = f"📋 {att_advice}"
 
-        # ── 卡片 3：安全围栏运行报告 ─────────────────────────
         crisis_n        = len(df_f[df_f["scenario"] == "danger_alert"])
         alert_n         = len(df_f[df_f["scenario"] != "normal"])
-        normal_n        = len(df_f[df_f["scenario"] == "normal"])
         safety_rate_val = round((1 - crisis_n / max(total_calls, 1)) * 100, 1)
         fence_triggered = sum(1 for v in st.session_state.fence_status.values() if v == "triggered")
         fence_pass      = sum(1 for v in st.session_state.fence_status.values() if v == "pass")
@@ -1854,7 +1543,6 @@ with tab_parent:
           &nbsp;|&nbsp; ⚠️ 警报：<b>{alert_n} 次</b>"""
         card3_tip = "🛡️ 所有高危输出已被重写为支持性语言"
 
-        # ── 渲染 3 列卡片 ─────────────────────────────────────
         _c1, _c2, _c3 = st.columns(3)
         with _c1:
             st.markdown(_insight_card(
@@ -1888,7 +1576,6 @@ with tab_parent:
             ), unsafe_allow_html=True)
 
     else:
-        # ── 空状态：展示示例卡片（占位）────────────────────────
         _ec1, _ec2, _ec3 = st.columns(3)
         _placeholder_cards = [
             ("📍", "高危场景规律", "Risk Pattern Analysis",
@@ -1914,7 +1601,6 @@ with tab_parent:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 导出报告（生成真实 CSV 报告）──────────────────────────
     if not df_f.empty:
         report_rows = []
         for _, row in df_f.iterrows():
@@ -1943,7 +1629,7 @@ with tab_parent:
         st.button("📄 导出完整评估报告给班主任 (需先触发对话)",
                   type="primary", width="stretch", disabled=True)
 
-# ── 页底脚注 + 部署路线图 ─────────────────────────────────────────────────────
+# ── 页底脚注 ─────────────────────────────────────────────────────
 st.markdown("""
 <div style="text-align:center;padding:16px 0 10px 0;font-size:0.78rem;color:#aaa;
      border-top:1px solid #eee;margin-top:28px;line-height:1.9;">
